@@ -12,6 +12,7 @@ const ROUTES = [
   [/^\/(library|collection)\/(\d+)$/, "browse"],
   [/^\/photos$/, "photos"],
   [/^\/watch\/(\d+)$/, "watch"],
+  [/^\/party\/([A-Za-z0-9]{6})$/, "party"],
   [/^\/item\/(\d+)$/, "item"],
   [/^\/go\/(\d+)$/, "go"],
   [/^\/projects$/, "projects"],

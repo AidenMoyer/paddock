@@ -731,3 +731,36 @@ body.dragging::after {
 .queue-thumb { width: 100px; flex: none; }
 .queue-thumb .thumb { border-radius: 6px; }
 .queue-title { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- watch parties & voice ---------- */
+.party-panel { border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 16px; display: flex; flex-direction: column; gap: 10px; background: var(--surface); }
+.party-members { display: flex; flex-direction: column; gap: 6px; }
+.party-member { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.party-member .avatar { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-3); font-weight: 600; font-size: 13px;
+  box-shadow: 0 0 0 0 transparent; transition: box-shadow var(--dur-fast) var(--ease-standard); }
+.party-member.talking .avatar { box-shadow: 0 0 0 3px #4cd964; }
+.party-voice { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.party-voice .voice-level { flex: 1 1 80px; min-width: 60px; }
+.party-voice .voice-level i { background: #4cd964; transition: width 80ms linear; }
+.party-reactions { display: flex; flex-wrap: wrap; gap: 4px; }
+.party-reactions .reaction { font-size: 20px; line-height: 1; padding: 6px; border-radius: 10px; border: none; background: var(--surface-2); cursor: pointer;
+  transition: transform var(--dur-fast) var(--ease-standard), background var(--dur-fast); }
+.party-reactions .reaction:hover { background: var(--hover); transform: scale(1.12); }
+.party-reactions .reaction:active { transform: scale(0.92); }
+.party-chat { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+.party-chat .chat-line { word-break: break-word; }
+.party-gesture { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 6; }
+.party-floats { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 5; }
+.party-float { position: absolute; bottom: 12%; font-size: 40px; text-align: center; animation: party-rise 2.6s var(--ease-decelerate) forwards; }
+.party-float .who { display: block; font-size: 11px; color: #fff; text-shadow: 0 1px 3px #000; }
+@keyframes party-rise { 0% { transform: translateY(0) scale(.6); opacity: 0; } 15% { opacity: 1; transform: translateY(-20px) scale(1.1); }
+  100% { transform: translateY(-260px) scale(1); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .party-float { animation: none; opacity: .9; } }
+.people-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; max-height: 180px; overflow-y: auto; }
+.party-strip { margin: 8px 0 20px; }
+.party-strip h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
+.party-invite { display: flex; align-items: center; gap: 12px; padding: 8px; border-radius: 12px; background: var(--surface); margin-bottom: 8px; color: inherit; text-decoration: none;
+  transition: background var(--dur-fast) var(--ease-standard); }
+.party-invite:hover { background: var(--hover); }
+.party-invite img { width: 120px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; background: var(--surface-3); }
+.party-invite > div { flex: 1; min-width: 0; }

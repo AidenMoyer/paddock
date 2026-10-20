@@ -106,6 +106,28 @@ def optional_actor(request: Request) -> Actor | None:
     return None
 
 
+def websocket_actor(ws) -> Actor | None:
+    """Who is on the other end of a WebSocket (HTTP middleware doesn't run for these, so the network
+    policy is applied here too). Browsers authenticate with the session cookie (and must come from this
+    origin, to stop cross-site WebSocket hijacking); the Android app sends its bearer token."""
+    zone = network_zone(client_ip(ws))
+    if zone in (None, "peer"):
+        return None
+    tok = _bearer(ws)
+    if tok:
+        return None if tok.startswith("pdk_ai_") else _session_actor(tok, ws)
+    cookie = ws.cookies.get(SESSION_COOKIE)
+    if not cookie:
+        return None
+    origin = ws.headers.get("origin")
+    if origin:
+        from urllib.parse import urlparse
+
+        if urlparse(origin).netloc != ws.headers.get("host"):
+            return None
+    return _session_actor(cookie, ws)
+
+
 def current_actor(actor: Actor | None = Depends(optional_actor)) -> Actor:
     if actor is None:
         raise HTTPException(401, "Sign in required")

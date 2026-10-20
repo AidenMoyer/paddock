@@ -6,10 +6,12 @@ import { pauseMusic } from "../audio.js";
 import { addToProjectDialog, addToCollectionDialog, itemCard, thumbBox } from "../cards.js";
 import { queue } from "../queue.js";
 import { Player, clientCodecs } from "../player.js";
+import { PartySync, partyPanel, startPartyDialog } from "../party.js";
 import { h, icon, iconBtn, fmtDuration, fmtBytes, fmtDateTime, timeAgo, toast, menu, promptDialog, resLabel, copyText, LIB_ICON } from "../ui.js";
 
-export async function render(root, { match }) {
+export async function render(root, { match, query }) {
   const id = +match[1];
+  const partyId = query?.get("party")?.toUpperCase() || null;
   document.body.classList.add("watching");
   pauseMusic();
   const codecs = clientCodecs().join(",");
@@ -37,10 +39,10 @@ export async function render(root, { match }) {
         } }, "Make proxy") : null))));
   } else {
     player = new Player(item, plan, {
-      autoplay: true,
+      autoplay: !partyId,                 // in a watch party the shared clock decides when to play
       onTheater: () => { layout.classList.toggle("theater"); localStorage.setItem("theater", layout.classList.contains("theater") ? "1" : "0"); },
-      onEnded: () => { const n = nextItem(); if (n && localStorage.getItem("autoplay") !== "0") setTimeout(() => navigate(`/watch/${n.id}`), 1500); },
-      onNext: () => { const n = nextItem(); if (n) navigate(`/watch/${n.id}`); },
+      onEnded: () => { const n = nextItem(); if (n && localStorage.getItem("autoplay") !== "0") setTimeout(() => goNext(n), 1500); },
+      onNext: () => { const n = nextItem(); if (n) goNext(n); },
       onCues: (cues) => drawTranscript(cues),
       onTime: (t) => highlightTranscript(t),
     });
@@ -48,6 +50,19 @@ export async function render(root, { match }) {
     setTimeout(() => player.root.focus({ preventScroll: true }), 50);
   }
   primary.append(playerWrap);
+
+  // ---- watch party: follow the shared clock, show the party panel
+  let sync = null, party = null;
+  if (partyId && player) {
+    sync = new PartySync(partyId, player);
+    party = partyPanel(sync, player);
+    secondary.append(party.el);
+    sync.addEventListener("switch", (e) => navigate(`/watch/${e.detail.item_id}?party=${partyId}`, { replace: true }));
+  }
+  function goNext(n) {
+    if (sync) { if (sync.canControl) sync.switchTo(n); return; }   // the party moves on together
+    navigate(`/watch/${n.id}`);
+  }
 
   // ---- title + actions
   primary.append(h("h1", { class: "watch-title" }, item.title));
@@ -77,6 +92,7 @@ export async function render(root, { match }) {
     h("div", { class: "owner" }, h("div", { class: "badge-kind" }, icon(LIB_ICON[item.library_kind] || "folder", "sm")),
       h("div", { class: "t" }, h("div", { style: { fontWeight: 500 } }, item.library), h("div", { class: "muted small", title: item.path }, item.show ? `${item.show} · Season ${item.season}` : item.path))),
     favBtn,
+    player && !partyId ? h("button", { class: "btn", onclick: () => startPartyDialog(item, player) }, icon("users"), "Watch together") : null,
     h("button", { class: "btn", onclick: () => addToProjectDialog([id]) }, icon("work"), "Add to project"),
     h("button", { class: "btn", onclick: share }, icon("share"), "Share"),
     h("a", { class: "btn", href: `/api/items/${id}/file?download=1`, download: "" }, icon("download"), "Download"),
@@ -179,5 +195,5 @@ export async function render(root, { match }) {
     toast("Share link copied — valid 72 h on your network/VPN");
   }
 
-  return { destroy: () => { player?.destroy(); window.removeEventListener("paddock:queue", onQueue); } };
+  return { destroy: () => { party?.close(); player?.destroy(); window.removeEventListener("paddock:queue", onQueue); } };
 }

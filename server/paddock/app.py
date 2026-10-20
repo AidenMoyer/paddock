@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 from contextlib import asynccontextmanager
@@ -12,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__, db, federation, jobs, mcp, portmap, tls, transcode, wireguard
-from .api import admin, assistant, auth, federation as federation_api, libraries, media, projects, share, system as system_api, uploads
+from .api import admin, assistant, auth, federation as federation_api, libraries, media, party as party_api, projects, share, system as system_api, uploads, voice as voice_api
 from .api.deps import client_ip, network_zone
 from .config import settings
 
@@ -43,12 +44,16 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         heartbeat.start()
         renewer.start()
+    from .party import parties
+
+    party_watchdog = asyncio.create_task(parties.watchdog())
     log.info("Paddock %s ready — data in %s", __version__, settings.data_dir)
     yield
     scheduler.stop.set()
     heartbeat.stop.set()
     renewer.stop.set()
     transcode.segments.stop_all()
+    party_watchdog.cancel()
 
 
 def create_app() -> FastAPI:
@@ -74,7 +79,7 @@ def create_app() -> FastAPI:
         h.setdefault("X-Frame-Options", "SAMEORIGIN")
         h.setdefault("Cross-Origin-Opener-Policy", "same-origin")
         h.setdefault("Cross-Origin-Resource-Policy", "same-origin")
-        h.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+        h.setdefault("Permissions-Policy", "camera=(), microphone=(self), geolocation=(), payment=()")  # mic: voice chat
         if settings.tls:
             h.setdefault("Strict-Transport-Security", "max-age=31536000")
         if request.url.path.startswith("/api/") and "cache-control" not in h:
@@ -88,7 +93,8 @@ def create_app() -> FastAPI:
         return JSONResponse({"detail": str(exc) or "Not allowed"}, status_code=403)
 
     for r in (auth.router, libraries.router, media.router, projects.router, uploads.router, admin.router,
-              assistant.router, share.router, federation_api.router, system_api.router, mcp.router):
+              assistant.router, share.router, federation_api.router, system_api.router, party_api.router,
+              voice_api.router, mcp.router):
         app.include_router(r)
 
     @app.get("/api/health")
