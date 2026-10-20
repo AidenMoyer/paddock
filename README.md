@@ -65,15 +65,22 @@ building a RAID 1 pool) before it's published.
 2. Boot from the stick and choose **Install Paddock OS**. Pick the disk for the system (16 GB or more, an SSD
    is ideal), give the server a name, and optionally a console password. **Try Paddock OS** runs it from the
    stick without installing anything.
-3. Remove the stick and restart. The screen shows the address, e.g. `https://192.168.1.50` or
-   `https://paddock.local`. Open it in a browser on your network, accept the certificate once, and create your
-   admin account.
+3. Remove the stick and restart. The server's screen shows the **Paddock OS console**: a live dashboard with
+   the address (e.g. `https://192.168.1.50` or `https://paddock.local`), health, pools and drive status.
+   Press **S** there to create your admin account at the server, or open the address in a browser on your
+   network, accept the certificate once, and create it there.
 4. **Manage server → System & drives**: drives you plug in show up there. Combine them into a **pool**
    (mirror / RAID 1, parity / RAID 5, double parity / RAID 6, RAID 10 or striped / RAID 0), or format or mount
    single drives. Each pool or drive appears under `/srv/media` with an **Add as library** button. The page
    also shows drive health (SMART), rebuild progress and failed drives, and lets you replace or add drives,
    run integrity checks, set a fixed IP address (with automatic undo if you lose access), change the name and
    time zone, read logs, and restart or shut down.
+
+**Fully offline, at the machine:** press Enter on the console and sign in with a Paddock admin account for the
+same management without any browser or network: first-time setup, drives & RAID pools, libraries, network
+(DHCP or fixed address), name & time zone, Paddock service & logs, accounts (including resetting a forgotten
+password at the console), restart / shut down and a root shell. It uses the same checked operations as the
+web page, and if Paddock itself isn't running you can still repair the machine from there.
 
 Paddock OS is Debian 13 with no desktop, no SSH and no extra services: about 1 GB installed. Paddock runs as an
 unprivileged user; the few root actions go through a small agent that only accepts a fixed list of checked
