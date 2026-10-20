@@ -1,0 +1,47 @@
+# Paddock Node — the sister app. Stores encrypted backups for your Paddock server(s) and can
+# share its own folders. Same image, lighter role. Runs on another NAS, a Raspberry Pi 4/5,
+# any Linux box with Docker.
+#
+#   docker compose -f compose.node.yaml up -d
+#   open https://<this-machine>:8443  → create the admin account
+#   Manage server → Linked servers → "Join with an invite" (invite made on your main Paddock)
+#
+# Tip for offsite backup: pair it at home first so the first big backup runs at LAN speed,
+# then take it to its new home. It keeps working there through the encrypted tunnel.
+
+name: paddock-node
+
+services:
+  paddock-node:
+    image: ghcr.io/aidenmoyer/paddock:latest
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PADDOCK_ROLE: node
+      PADDOCK_WG_ENABLED: "1"
+      PADDOCK_WG_PORT: "51821"          # different from the main server if both sit on one LAN
+      PADDOCK_MEDIA_ROOTS: "/media"
+      TZ: "America/Chicago"
+    volumes:
+      - ./paddock-node-data:/data           # backups you hold for others live in /data/vault
+      # - /mnt/shared:/media/shared:ro      # optional: folders this node shares
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp:size=512m]
+
+  paddock-node-wg:
+    image: ghcr.io/aidenmoyer/paddock-wg:latest
+    restart: unless-stopped
+    network_mode: host
+    user: "0:568"                                    # root for netlink, but no file-permission override
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      WG_DIR: /data/wireguard
+    volumes:
+      - ./paddock-node-data/wireguard:/data/wireguard
+    depends_on: [paddock-node]

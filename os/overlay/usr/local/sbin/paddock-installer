@@ -1,0 +1,240 @@
+#!/bin/bash
+# Paddock OS installer. Runs on tty1 when the ISO is booted with "Install Paddock OS".
+#
+# Disk layout (GPT):  1 MiB BIOS boot · 512 MiB EFI · 10 GiB system (ext4) · rest = data (ext4)
+# The data partition holds Paddock's database, caches and a "local" media folder. Re-running the
+# installer on a disk that already has Paddock OS offers an upgrade that keeps the data partition.
+#
+# Unattended (used by CI in a VM only; must be typed on the kernel command line):
+#   paddock.autoinstall=/dev/vda
+set -uo pipefail
+
+TITLE="Paddock OS installer"
+MEDIUM=/run/live/medium
+SQUASH="$MEDIUM/live/filesystem.squashfs"
+TARGET=/mnt/target
+LOG=/run/paddock-install.log
+MIN_BYTES=$((16 * 1024 * 1024 * 1024))
+. /etc/paddock-os-release
+AUTO="$(sed -n 's/.*paddock\.autoinstall=\([^ ]*\).*/\1/p' /proc/cmdline)"
+export NEWT_COLORS='root=,black window=,black border=white,black textbox=white,black button=black,white actbutton=white,red title=white,black'
+
+say() {
+  echo "[installer] $*" >>"$LOG"
+  if [ -n "$AUTO" ]; then echo "[installer] $*" >/dev/console; fi
+}
+
+fail() {
+  say "FAILED: $*"
+  cleanup
+  if [ -n "$AUTO" ]; then echo "PADDOCK-INSTALL-FAILED" >/dev/console; sleep 2; poweroff -f; fi
+  whiptail --title "$TITLE" --msgbox "Installation failed:\n\n$*\n\nThe last lines of $LOG:\n$(tail -n 5 "$LOG")" 20 76
+  menu_after_failure
+}
+
+run() {
+  echo "+ $*" >>"$LOG"
+  "$@" >>"$LOG" 2>&1 || fail "$1 failed (exit $?)"
+}
+
+cleanup() {
+  for m in "$TARGET/boot/efi" "$TARGET/srv/data" "$TARGET/dev/pts" "$TARGET/dev" "$TARGET/proc" "$TARGET/sys" "$TARGET/run" "$TARGET"; do
+    mountpoint -q "$m" 2>/dev/null && umount -l "$m" 2>/dev/null
+  done
+  return 0
+}
+
+menu_after_failure() {
+  while true; do
+    choice=$(whiptail --title "$TITLE" --menu "What now?" 14 60 4 \
+      retry "Start the installer again" shell "Open a root shell (advanced)" \
+      reboot "Restart the computer" poweroff "Turn the computer off" 3>&1 1>&2 2>&3) || choice=retry
+    case "$choice" in
+      retry) exec "$0" ;;
+      shell) clear; echo "Type 'exit' to return to the installer."; bash -l ;;
+      reboot) systemctl reboot; sleep 30 ;;
+      poweroff) systemctl poweroff; sleep 30 ;;
+    esac
+  done
+}
+
+part() { case "$1" in *[0-9]) echo "${1}p$2" ;; *) echo "$1$2" ;; esac; }
+
+medium_disk() {
+  local src
+  src="$(findmnt -no SOURCE "$MEDIUM" 2>/dev/null)" || return 0
+  local parent
+  parent="$(lsblk -no PKNAME "$src" 2>/dev/null | head -n1)"
+  if [ -n "$parent" ]; then echo "/dev/$parent"; else echo "$src"; fi
+}
+
+list_disks() {  # "path|size|model" for every disk we may install to
+  local boot
+  boot="$(medium_disk)"
+  lsblk -dnbpo NAME,TYPE,RO,SIZE | while read -r name type ro size; do
+    [ "$type" = disk ] && [ "$ro" = 0 ] || continue
+    [ "$name" = "$boot" ] && continue
+    case "$name" in /dev/zram*|/dev/loop*|/dev/sr*) continue ;; esac
+    [ "$size" -ge "$MIN_BYTES" ] || continue
+    model="$(lsblk -dno MODEL,TRAN "$name" | xargs)"
+    echo "$name|$(lsblk -dno SIZE "$name" | xargs)|${model:-disk}"
+  done
+}
+
+find_part() { lsblk -lnpo NAME,PARTLABEL "$1" | awk -v l="$2" '$2==l {print $1; exit}'; }
+
+# ---------------------------------------------------------------------------------------------
+[ -f "$SQUASH" ] || fail "The Paddock OS image wasn't found on the install medium."
+: >"$LOG"
+say "Paddock OS $PADDOCK_OS_VERSION ($PADDOCK_OS_VARIANT) installer started"
+
+if [ -n "$AUTO" ]; then
+  DISK="$AUTO"; MODE=erase; ROOTPW=""; HOST=paddock
+  [ -b "$DISK" ] || fail "autoinstall disk $DISK not found"
+else
+  whiptail --title "$TITLE" --yes-button "Continue" --no-button "Cancel" --yesno \
+"Welcome to Paddock OS $PADDOCK_OS_VERSION.\n
+This installs a small, dedicated system that runs Paddock and nothing else.
+You'll manage everything from a web browser afterwards.\n
+You need a disk of at least 16 GB for the system. Other drives with your
+movies, photos and footage are left untouched and show up in Paddock." 16 76 || menu_after_failure
+
+  mapfile -t disks < <(list_disks)
+  [ ${#disks[@]} -gt 0 ] || fail "No disk of at least 16 GB was found (the USB stick you booted from doesn't count)."
+  items=()
+  for d in "${disks[@]}"; do IFS='|' read -r n s m <<<"$d"; items+=("$n" "$s  $m"); done
+  DISK=$(whiptail --title "$TITLE" --menu "Install Paddock OS on which disk?" 18 76 8 "${items[@]}" 3>&1 1>&2 2>&3) || menu_after_failure
+
+  MODE=erase
+  if [ -n "$(find_part "$DISK" PADDOCK-DATA)" ] && [ -n "$(find_part "$DISK" PADDOCK-ROOT)" ]; then
+    MODE=$(whiptail --title "$TITLE" --menu "Paddock OS is already installed on $DISK." 14 76 2 \
+      upgrade "Upgrade - keep my Paddock data, settings and accounts" \
+      erase "Erase everything and start fresh" 3>&1 1>&2 2>&3) || menu_after_failure
+  fi
+  if [ "$MODE" = erase ]; then
+    confirm=$(whiptail --title "$TITLE" --inputbox \
+"EVERYTHING on $DISK will be erased:\n$(lsblk -no NAME,SIZE,FSTYPE,LABEL "$DISK" | head -n 8)\n\nType ERASE to continue." 18 76 3>&1 1>&2 2>&3) || menu_after_failure
+    [ "$confirm" = ERASE ] || { whiptail --title "$TITLE" --msgbox "Nothing was changed." 8 40; exec "$0"; }
+  fi
+
+  HOST=$(whiptail --title "$TITLE" --inputbox "Name for this server on your network (you'll reach it at https://<name>.local):" 10 76 paddock 3>&1 1>&2 2>&3) || menu_after_failure
+  HOST=$(echo "$HOST" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9-' '-' | sed 's/^-*//; s/-*$//' | cut -c1-40)
+  HOST=${HOST:-paddock}
+
+  while true; do
+    ROOTPW=$(whiptail --title "$TITLE" --passwordbox "Optional: a password for the local console (user \"root\").\nLeave empty to keep console login disabled. Paddock's own accounts are created in the browser." 12 76 3>&1 1>&2 2>&3) || menu_after_failure
+    [ -z "$ROOTPW" ] && break
+    again=$(whiptail --title "$TITLE" --passwordbox "Type it again:" 9 60 3>&1 1>&2 2>&3) || continue
+    [ "$ROOTPW" = "$again" ] && break
+    whiptail --title "$TITLE" --msgbox "The passwords didn't match." 8 40
+  done
+fi
+
+say "installing to $DISK (mode $MODE)"
+cleanup
+mkdir -p "$TARGET"
+
+if [ "$MODE" = erase ]; then
+  say "partitioning $DISK"
+  for p in $(lsblk -lnpo NAME "$DISK" | tail -n +2); do umount -l "$p" 2>/dev/null; done
+  run wipefs -a "$DISK"
+  run sgdisk --zap-all "$DISK"
+  run sgdisk -n1:0:+1M -t1:EF02 -c1:PADDOCK-BIOS \
+             -n2:0:+512M -t2:EF00 -c2:PADDOCK-ESP \
+             -n3:0:+10G -t3:8304 -c3:PADDOCK-ROOT \
+             -n4:0:0 -t4:8300 -c4:PADDOCK-DATA "$DISK"
+  run partx -u "$DISK"
+  udevadm settle
+  ESP=$(part "$DISK" 2); ROOT=$(part "$DISK" 3); DATA=$(part "$DISK" 4)
+  run mkfs.vfat -F 32 -n PADDOCK-ESP "$ESP"
+  run mkfs.ext4 -F -q -L PADDOCK-DATA -m 1 "$DATA"
+else
+  ESP=$(find_part "$DISK" PADDOCK-ESP); ROOT=$(find_part "$DISK" PADDOCK-ROOT); DATA=$(find_part "$DISK" PADDOCK-DATA)
+  [ -n "$ESP" ] && [ -n "$ROOT" ] && [ -n "$DATA" ] || fail "Couldn't find the existing Paddock OS partitions on $DISK."
+  for p in "$ESP" "$ROOT" "$DATA"; do umount -l "$p" 2>/dev/null; done
+  run mkfs.vfat -F 32 -n PADDOCK-ESP "$ESP"
+fi
+run mkfs.ext4 -F -q -L PADDOCK-ROOT "$ROOT"
+
+run mount "$ROOT" "$TARGET"
+say "copying the system"
+if [ -n "$AUTO" ]; then
+  run unsquashfs -q -f -d "$TARGET" "$SQUASH"
+else
+  unsquashfs -percentage -f -d "$TARGET" "$SQUASH" 2>>"$LOG" |
+    whiptail --title "$TITLE" --gauge "Copying Paddock OS to $DISK..." 8 70 0
+  [ -x "$TARGET/usr/local/sbin/paddock-installer" ] || fail "Copying the system failed."
+fi
+
+mkdir -p "$TARGET/boot/efi" "$TARGET/srv/data" "$TARGET/srv/media/local"
+run mount "$ESP" "$TARGET/boot/efi"
+run mount "$DATA" "$TARGET/srv/data"
+install -d -m 0755 "$TARGET/srv/data/media"
+chown 568:568 "$TARGET/srv/data/media"
+install -d -o 568 -g 568 -m 0750 "$TARGET/srv/data/paddock"
+
+uuid() { blkid -o value -s UUID "$1"; }
+ROOT_UUID=$(uuid "$ROOT"); ESP_UUID=$(uuid "$ESP"); DATA_UUID=$(uuid "$DATA")
+cat >"$TARGET/etc/fstab" <<EOF
+# Paddock OS
+UUID=$ROOT_UUID  /                ext4  defaults,noatime,errors=remount-ro  0 1
+UUID=$ESP_UUID   /boot/efi        vfat  umask=0077,nofail                   0 2
+UUID=$DATA_UUID  /srv/data        ext4  defaults,noatime,nofail             0 2
+/srv/data/media  /srv/media/local none  bind,nofail,x-systemd.requires-mounts-for=/srv/data  0 0
+EOF
+echo "$HOST" >"$TARGET/etc/hostname"
+printf '127.0.0.1\tlocalhost\n127.0.1.1\t%s\n::1\t\tlocalhost ip6-localhost ip6-loopback\n' "$HOST" >"$TARGET/etc/hosts"
+sed -i "s/^PADDOCK_HOSTNAMES=.*/PADDOCK_HOSTNAMES=$HOST.local/" "$TARGET/etc/paddock/paddock.env"
+: >"$TARGET/etc/machine-id"
+
+for m in dev dev/pts proc sys run; do
+  case $m in proc) run mount -t proc proc "$TARGET/proc" ;; sys) run mount -t sysfs sys "$TARGET/sys" ;;
+    run) run mount -t tmpfs tmpfs "$TARGET/run" ;; *) run mount --bind "/$m" "$TARGET/$m" ;; esac
+done
+if [ -n "$ROOTPW" ]; then
+  echo "root:$ROOTPW" | chroot "$TARGET" chpasswd || fail "setting the console password failed"
+else
+  chroot "$TARGET" passwd -l root >>"$LOG" 2>&1
+fi
+
+say "installing the boot loader"
+KVER=$(ls "$TARGET/lib/modules" | sort -V | tail -n1)
+EXTRA=""
+[ -n "$AUTO" ] && EXTRA="console=tty0 console=ttyS0,115200"
+mkdir -p "$TARGET/boot/grub"
+cat >"$TARGET/boot/grub/grub.cfg" <<EOF
+set default=0
+set timeout=3
+insmod part_gpt
+insmod ext2
+search --no-floppy --fs-uuid --set=root $ROOT_UUID
+menuentry "Paddock OS $PADDOCK_OS_VERSION" {
+  linux /boot/vmlinuz-$KVER root=UUID=$ROOT_UUID ro quiet $EXTRA
+  initrd /boot/initrd.img-$KVER
+}
+menuentry "Paddock OS $PADDOCK_OS_VERSION (safe graphics)" {
+  linux /boot/vmlinuz-$KVER root=UUID=$ROOT_UUID ro nomodeset $EXTRA
+  initrd /boot/initrd.img-$KVER
+}
+EOF
+run chroot "$TARGET" grub-install --target=i386-pc --boot-directory=/boot "$DISK"
+run chroot "$TARGET" grub-install --target=x86_64-efi --efi-directory=/boot/efi --boot-directory=/boot --removable --no-nvram
+
+sync
+cleanup
+say "done"
+
+if [ -n "$AUTO" ]; then
+  echo "PADDOCK-INSTALL-OK" >/dev/console
+  sleep 1
+  poweroff -f
+fi
+
+ADDR_NOTE="https://$HOST.local"
+whiptail --title "$TITLE" --msgbox \
+"Paddock OS is installed.\n
+Remove the USB stick, then press Enter to restart.\n
+After it starts, open $ADDR_NOTE (or the address shown on this screen)
+from a browser on your network and create your admin account." 14 76
+systemctl reboot
+sleep 30

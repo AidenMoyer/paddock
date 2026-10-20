@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# local servers' data (databases, keys, caches) — never commit
+server/.devdata/
+server/.devmedia/
+server/.laptopdata/
+server/data/
+server/media/
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.kotlin/
+android/.idea/
+*.apk
+*.aab
+*.jks
+*.keystore
+keystore.properties
+
+# build outputs
+ffmpeg/out/
+os/out/
+*.iso
+*.qcow2
+
+# editors / OS / local tooling
+.idea/
+.vscode/
+.claude/
+.DS_Store
+Thumbs.db

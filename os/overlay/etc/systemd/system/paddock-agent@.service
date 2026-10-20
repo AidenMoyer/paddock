@@ -1,0 +1,12 @@
+[Unit]
+Description=Paddock system agent (one request from Manage server → System)
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/sbin/paddock-agent
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+RuntimeMaxSec=3700
+PrivateTmp=yes
+ProtectHome=yes

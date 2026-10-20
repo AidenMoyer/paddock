@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Paddock "P" (checkered-flag window in the bowl), centred in the adaptive-icon safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <group android:scaleX="1.2" android:scaleY="1.2" android:translateX="12.6" android:translateY="15">
+        <path android:fillColor="#FFFFFFFF" android:fillType="evenOdd"
+            android:pathData="M18,17a3,3 0,0 1,3 -3h17a13,13 0,0 1,0 26h-9v8a3,3 0,0 1,-3 3h-5a3,3 0,0 1,-3 -3zM29,21h6v6h-6zM35,27h6v6h-6z" />
+    </group>
+</vector>

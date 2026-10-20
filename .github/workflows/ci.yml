@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    name: Server tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: ffmpeg for generating test media
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ffmpeg
+      - run: pip install -r server/requirements.txt pytest
+      - run: python -m pytest -q
+        working-directory: server
+
+  scripts:
+    name: OS & build scripts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: shellcheck
+        run: |
+          shellcheck -S error ffmpeg/build.sh os/build.sh os/test/smoke.sh deploy/wireguard/paddock-wg.sh \
+            os/overlay/usr/local/sbin/paddock-installer os/overlay/usr/local/sbin/paddock-mount \
+            os/overlay/usr/local/sbin/paddock-prepare
+      - name: system agent compiles
+        run: python3 -m py_compile os/overlay/usr/local/sbin/paddock-agent
+
+  android:
+    name: Android app builds
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: ./gradlew --no-daemon --stacktrace assembleDebug
+        working-directory: android

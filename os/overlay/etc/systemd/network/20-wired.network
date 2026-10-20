@@ -1,0 +1,13 @@
+# Paddock OS: every wired port gets an address by DHCP and answers to <hostname>.local.
+# Manage server → System → Network rewrites this file for a fixed address.
+[Match]
+Name=en* eth*
+
+[Network]
+DHCP=yes
+MulticastDNS=yes
+LLMNR=no
+IPv6AcceptRA=yes
+
+[DHCPv4]
+UseDomains=yes

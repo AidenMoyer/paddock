@@ -1,0 +1,82 @@
+#!/bin/sh
+# paddock-mount add|remove /dev/X
+#
+# Mounts a data drive for Paddock at /srv/media/<label> (or drive-<uuid>), or unmounts it.
+# Never touches the system disk, the installer medium, or Paddock OS's own partitions.
+# Linux filesystems keep their own permissions; NTFS/exFAT/FAT drives are mounted as the paddock
+# user so phone backups and uploads can be written to them.
+set -eu
+
+BASE=/srv/media
+STATE=/run/paddock-mounts
+PADDOCK_UID=568
+log() { echo "paddock-mount: $*"; logger -t paddock-mount -- "$*" 2>/dev/null || true; }
+
+action="${1:-}"
+dev="${2:-}"
+case "$dev" in /dev/*) ;; *) log "usage: paddock-mount add|remove /dev/X"; exit 2 ;; esac
+key="$(basename "$dev")"
+mkdir -p "$STATE"
+
+disk_of() {  # parent disk of a partition (or the device itself if it has no partition table)
+  p="$(lsblk -no PKNAME "$1" 2>/dev/null | head -n1)"
+  [ -n "$p" ] && echo "$p" || basename "$1"
+}
+
+protected() {
+  for mnt in / /run/live/medium; do
+    src="$(findmnt -no SOURCE "$mnt" 2>/dev/null || true)"
+    case "$src" in /dev/*) [ "$(disk_of "$src")" = "$(disk_of "$dev")" ] && return 0 ;; esac
+  done
+  case "$(blkid -o value -s PARTLABEL "$dev" 2>/dev/null)$(blkid -o value -s LABEL "$dev" 2>/dev/null)" in
+    *PADDOCK-*|*PADDOCK_OS*) return 0 ;;
+  esac
+  return 1
+}
+
+case "$action" in
+add)
+  [ -b "$dev" ] || exit 0
+  if protected; then exit 0; fi
+  if findmnt -rno TARGET -S "$dev" >/dev/null 2>&1; then exit 0; fi
+  fstype="$(blkid -o value -s TYPE "$dev" 2>/dev/null || true)"
+  label="$(blkid -o value -s LABEL "$dev" 2>/dev/null | tr -c 'A-Za-z0-9._-' '_' | sed 's/_*$//' | cut -c1-40)"
+  uuid="$(blkid -o value -s UUID "$dev" 2>/dev/null || true)"
+  name="${label:-drive-$(echo "${uuid:-$key}" | cut -c1-8)}"
+  case "$name" in .*|local) name="drive-$name" ;; esac
+  dir="$BASE/$name"; n=2
+  while mountpoint -q "$dir" 2>/dev/null; do dir="$BASE/$name-$n"; n=$((n + 1)); done
+
+  safe="nosuid,nodev,noexec,noatime"
+  case "$fstype" in
+    ext2|ext3|ext4|xfs|btrfs) type="$fstype"; opts="rw,$safe" ;;
+    ntfs|ntfs3) type=ntfs3; opts="rw,$safe,uid=$PADDOCK_UID,gid=$PADDOCK_UID,umask=0022,windows_names" ;;
+    exfat) type=exfat; opts="rw,$safe,uid=$PADDOCK_UID,gid=$PADDOCK_UID,umask=0022" ;;
+    vfat) type=vfat; opts="rw,$safe,uid=$PADDOCK_UID,gid=$PADDOCK_UID,umask=0022,utf8" ;;
+    *) exit 0 ;;
+  esac
+
+  mkdir -p "$dir"
+  if mount -t "$type" -o "$opts" "$dev" "$dir" 2>/dev/null; then
+    log "mounted $dev ($fstype) at $dir"
+  elif mount -t "$type" -o "ro,$safe" "$dev" "$dir" 2>/dev/null; then
+    # e.g. an NTFS drive Windows didn't shut down cleanly: still watchable, just not writable
+    log "mounted $dev ($fstype) read-only at $dir"
+  else
+    rmdir "$dir" 2>/dev/null || true
+    log "could not mount $dev ($fstype)"
+    exit 1
+  fi
+  echo "$dir" > "$STATE/$key"
+  ;;
+remove)
+  dir="$(cat "$STATE/$key" 2>/dev/null || findmnt -rno TARGET -S "$dev" 2>/dev/null | head -n1 || true)"
+  case "$dir" in "$BASE"/*) ;; *) exit 0 ;; esac
+  umount "$dir" 2>/dev/null || umount -l "$dir" 2>/dev/null || true
+  rmdir "$dir" 2>/dev/null || true
+  rm -f "$STATE/$key"
+  log "unmounted $dev from $dir"
+  ;;
+*)
+  log "usage: paddock-mount add|remove /dev/X"; exit 2 ;;
+esac

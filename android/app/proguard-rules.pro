@@ -1,0 +1,9 @@
+-keepattributes *Annotation*, InnerClasses
+-keep,includedescriptorclasses class app.paddock.**$$serializer { *; }
+-keepclassmembers class app.paddock.** { *** Companion; }
+-keepclasseswithmembers class app.paddock.** { kotlinx.serialization.KSerializer serializer(...); }
+-keep class com.wireguard.android.backend.** { *; }
+-keep class com.wireguard.crypto.** { *; }
+-dontwarn org.bouncycastle.**
+-dontwarn org.conscrypt.**
+-dontwarn org.openjsse.**

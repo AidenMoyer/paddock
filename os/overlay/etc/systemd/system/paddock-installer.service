@@ -1,0 +1,20 @@
+[Unit]
+Description=Paddock OS installer
+After=systemd-user-sessions.service systemd-udev-settle.service
+Conflicts=getty@tty1.service
+Before=getty@tty1.service
+ConditionKernelCommandLine=paddock.installer
+
+[Service]
+Type=idle
+ExecStart=/usr/local/sbin/paddock-installer
+StandardInput=tty
+StandardOutput=tty
+StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+Environment=TERM=linux
+
+[Install]
+WantedBy=multi-user.target

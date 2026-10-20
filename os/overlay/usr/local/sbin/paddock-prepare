@@ -1,0 +1,6 @@
+#!/bin/sh
+# Runs as root before Paddock starts: data folders exist and belong to the paddock user.
+set -eu
+install -d -m 0755 /srv/data /srv/media
+install -d -o paddock -g paddock -m 0750 /srv/data/paddock /srv/data/paddock/wireguard
+if [ -d /srv/data/media ]; then chown paddock:paddock /srv/data/media; fi

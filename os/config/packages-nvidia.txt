@@ -1,0 +1,10 @@
+# Extra packages for the NVIDIA edition (Debian 13 non-free, driver 550: GTX 900-series and newer).
+# The kernel module is compiled at build time and the compiler/headers are removed again, so the
+# installed system carries only the module, the user-space libraries ffmpeg loads, and nvidia-smi.
+libcuda1
+libnvcuvid1
+libnvidia-encode1
+nvidia-smi
+nvidia-kernel-support
+nvidia-modprobe
+firmware-nvidia-gsp

@@ -1,0 +1,14 @@
+[Unit]
+Description=Paddock system agent socket (Manage server → System)
+ConditionKernelCommandLine=!paddock.installer
+
+[Socket]
+ListenStream=/run/paddock-agent.sock
+SocketUser=root
+SocketGroup=paddock
+SocketMode=0660
+Accept=yes
+MaxConnections=8
+
+[Install]
+WantedBy=sockets.target

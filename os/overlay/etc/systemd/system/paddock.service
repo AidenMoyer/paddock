@@ -1,0 +1,45 @@
+[Unit]
+Description=Paddock media server
+Documentation=https://github.com/AidenMoyer/paddock
+After=network-online.target local-fs.target
+Wants=network-online.target
+ConditionKernelCommandLine=!paddock.installer
+
+[Service]
+Type=simple
+User=paddock
+Group=paddock
+SupplementaryGroups=video render
+EnvironmentFile=/etc/paddock/paddock.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+WorkingDirectory=/opt/paddock/app
+# "+" runs as root: create the data folders with the right owner before Paddock starts
+ExecStartPre=+/usr/local/sbin/paddock-prepare
+ExecStart=/opt/paddock/venv/bin/python -m paddock
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+# Paddock needs port 443 and nothing else from root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/data /srv/media
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

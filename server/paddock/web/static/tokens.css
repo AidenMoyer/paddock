@@ -1,0 +1,96 @@
+/* Generated from design/tokens.json — do not edit by hand. */
+:root {
+  --bg: #0f0f0f;
+  --bg-elev: #181818;
+  --surface: #212121;
+  --surface-2: #272727;
+  --surface-3: #3a3a3a;
+  --hover: rgba(255, 255, 255, 0.102);
+  --press: rgba(255, 255, 255, 0.2);
+  --text: #f1f1f1;
+  --text-2: #aaaaaa;
+  --text-3: #717171;
+  --border: rgba(255, 255, 255, 0.102);
+  --accent: #ff3b30;
+  --accent-2: #ff6a2b;
+  --accent-text: #ffffff;
+  --link: #3ea6ff;
+  --ok: #2ba640;
+  --warn: #f2a60c;
+  --danger: #ff4e45;
+  --chip: #272727;
+  --chip-active: #f1f1f1;
+  --chip-active-text: #0f0f0f;
+  --scrim: rgba(0, 0, 0, 0.6);
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-xxl: 40px;
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+  --dur-page: 260ms;
+  --ease-standard: cubic-bezier(0.2, 0.0, 0.0, 1.0);
+  --ease-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1.0);
+  --ease-accelerate: cubic-bezier(0.3, 0.0, 0.8, 0.15);
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #ffffff;
+    --bg-elev: #ffffff;
+    --surface: #f2f2f2;
+    --surface-2: #e5e5e5;
+    --surface-3: #d0d0d0;
+    --hover: rgba(0, 0, 0, 0.051);
+    --press: rgba(0, 0, 0, 0.102);
+    --text: #0f0f0f;
+    --text-2: #606060;
+    --text-3: #909090;
+    --border: rgba(0, 0, 0, 0.102);
+    --accent: #ff3b30;
+    --accent-2: #ff6a2b;
+    --accent-text: #ffffff;
+    --link: #065fd4;
+    --ok: #2ba640;
+    --warn: #c98a00;
+    --danger: #e5352c;
+    --chip: #f2f2f2;
+    --chip-active: #0f0f0f;
+    --chip-active-text: #ffffff;
+    --scrim: rgba(0, 0, 0, 0.451);
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-elev: #ffffff;
+  --surface: #f2f2f2;
+  --surface-2: #e5e5e5;
+  --surface-3: #d0d0d0;
+  --hover: rgba(0, 0, 0, 0.051);
+  --press: rgba(0, 0, 0, 0.102);
+  --text: #0f0f0f;
+  --text-2: #606060;
+  --text-3: #909090;
+  --border: rgba(0, 0, 0, 0.102);
+  --accent: #ff3b30;
+  --accent-2: #ff6a2b;
+  --accent-text: #ffffff;
+  --link: #065fd4;
+  --ok: #2ba640;
+  --warn: #c98a00;
+  --danger: #e5352c;
+  --chip: #f2f2f2;
+  --chip-active: #0f0f0f;
+  --chip-active-text: #ffffff;
+  --scrim: rgba(0, 0, 0, 0.451);
+  color-scheme: light;
+}

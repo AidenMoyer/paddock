@@ -1,0 +1,14 @@
+# The image needs server/, deploy/ and ffmpeg/ (incl. a prebuilt ffmpeg/out tarball, if any).
+android
+os
+design
+docs
+**/.venv
+**/__pycache__
+**/.pytest_cache
+server/.devdata
+server/.devmedia
+server/.laptopdata
+server/tests
+.git
+.claude

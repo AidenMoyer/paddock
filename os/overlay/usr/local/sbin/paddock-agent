@@ -1,0 +1,599 @@
+#!/usr/bin/python3
+"""paddock-agent — the only part of Paddock OS that runs as root on request.
+
+Paddock itself runs as an unprivileged user. Manage server → System sends one JSON request per
+connection over /run/paddock-agent.sock (owned root:paddock, mode 0660; systemd starts one agent per
+connection). Every operation is on a fixed list, every argument is validated, and commands are run
+as argument lists — never through a shell. Destructive operations require the caller to repeat the
+target's name as confirmation. The system disk and the installer medium can never be touched.
+
+Request:  {"op": "disks", "args": {...}}\n      Response: {"ok": true, "result": ...}\n
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+NETWORK_FILE = Path("/etc/systemd/network/20-wired.network")
+NETWORK_BACKUP = Path("/etc/systemd/network/.20-wired.network.previous")
+PADDOCK_ENV = Path("/etc/paddock/paddock.env")
+MOUNT = "/usr/local/sbin/paddock-mount"
+LOG_UNITS = {"paddock", "paddock-wg", "systemd-networkd", "systemd-timesyncd", "mdmonitor", "kernel"}
+LEVELS = {"raid0": 2, "raid1": 2, "raid5": 3, "raid6": 4, "raid10": 4}
+DEV_RE = re.compile(r"^/dev/(sd[a-z]{1,3}|vd[a-z]{1,3}|xvd[a-z]{1,3}|hd[a-z]|nvme\d+n\d+|mmcblk\d+|md\d+)(p?\d+)?$")
+POOL_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
+HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$")
+
+
+class Refused(Exception):
+    pass
+
+
+def run(cmd: list[str], timeout: int = 120, check: bool = True, inp: str | None = None) -> str:
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, input=inp)
+    if check and r.returncode != 0:
+        raise Refused(f"{Path(cmd[0]).name} failed: {(r.stderr or r.stdout).strip()[-300:]}")
+    return r.stdout
+
+
+def later(*cmd: str, seconds: int = 2) -> None:
+    """Run a command shortly after we've answered (restarts, reboots)."""
+    run(["systemd-run", "--quiet", "--collect", f"--on-active={seconds}", *cmd])
+
+
+# ---- disks ------------------------------------------------------------------------------------
+
+def lsblk() -> list[dict]:
+    cols = "NAME,PATH,PKNAME,SIZE,TYPE,FSTYPE,LABEL,UUID,PARTLABEL,MOUNTPOINTS,MODEL,SERIAL,TRAN,ROTA,RM,FSAVAIL,FSUSED"
+    return json.loads(run(["lsblk", "-J", "-b", "-o", cols]))["blockdevices"]
+
+
+def flat(devs: list[dict], parent: dict | None = None):
+    for d in devs:
+        yield d, parent
+        yield from flat(d.get("children") or [], d)
+
+
+def disk_of(path: str) -> str:
+    out = run(["lsblk", "-no", "PKNAME", path], check=False).strip().splitlines()
+    return "/dev/" + out[0] if out and out[0] else path
+
+
+def protected_disks() -> set[str]:
+    """The system disk and the USB stick Paddock OS booted from."""
+    out = set()
+    for mnt in ("/", "/run/live/medium", "/srv/data", "/boot/efi"):
+        src = run(["findmnt", "-no", "SOURCE", mnt], check=False).strip()
+        if src.startswith("/dev/"):
+            out.add(disk_of(src))
+    return out
+
+
+def known_device(path: str, kinds: tuple[str, ...]) -> dict:
+    if not isinstance(path, str) or not DEV_RE.match(path):
+        raise Refused("Not a drive Paddock can manage")
+    for d, _ in flat(lsblk()):
+        if d["path"] == path:
+            if d["type"] not in kinds:
+                raise Refused(f"{path} is a {d['type']}, expected {'/'.join(kinds)}")
+            return d
+    raise Refused(f"{path} doesn't exist")
+
+
+def unprotected_disk(path: str) -> dict:
+    d = known_device(path, ("disk",))
+    if path in protected_disks():
+        raise Refused(f"{path} holds Paddock OS itself")
+    if any(m for c, _ in flat([d]) for m in (c.get("mountpoints") or []) if m and not m.startswith("/srv/media/")):
+        raise Refused(f"{path} is in use by the system")
+    for c, _ in flat(d.get("children") or []):
+        if c["type"].startswith("raid"):
+            raise Refused(f"{path} is part of pool {c.get('label') or c['name']}; remove it from the pool first")
+    return d
+
+
+_smart_cache = Path("/run/paddock-agent-smart.json")
+
+
+def smart_summary(paths: list[str]) -> dict:
+    try:
+        cache = json.loads(_smart_cache.read_text())
+    except (OSError, ValueError):
+        cache = {}
+    now = time.time()
+    for p in paths:
+        hit = cache.get(p)
+        if hit and now - hit.get("at", 0) < 600:
+            continue
+        r = subprocess.run(["smartctl", "-j", "-H", "-A", "-i", p], capture_output=True, text=True, timeout=30)
+        try:
+            j = json.loads(r.stdout or "{}")
+        except ValueError:
+            j = {}
+        attrs = {a.get("name"): a.get("raw", {}).get("value") for a in (j.get("ata_smart_attributes") or {}).get("table", [])}
+        nv = j.get("nvme_smart_health_information_log") or {}
+        cache[p] = {
+            "at": now,
+            "available": bool(j.get("smart_status")) or bool(nv),
+            "passed": (j.get("smart_status") or {}).get("passed"),
+            "temperature": (j.get("temperature") or {}).get("current"),
+            "power_on_hours": (j.get("power_on_time") or {}).get("hours"),
+            "reallocated": attrs.get("Reallocated_Sector_Ct"),
+            "pending": attrs.get("Current_Pending_Sector"),
+            "media_errors": nv.get("media_errors"),
+            "percentage_used": nv.get("percentage_used"),
+        }
+    try:
+        _smart_cache.write_text(json.dumps(cache))
+    except OSError:
+        pass
+    return {p: cache.get(p) for p in paths}
+
+
+def op_disks(_: dict) -> dict:
+    devs = lsblk()
+    prot = protected_disks()
+    pools = {p["device"]: p["name"] for p in pools_status()}
+    disks = []
+    for d in devs:
+        if d["type"] != "disk" or d["name"].startswith(("zram", "loop", "sr", "md")):
+            continue
+        role = "system" if d["path"] in prot else "free"
+        members = []
+        for c, _ in flat(d.get("children") or []):
+            if c["type"].startswith("raid"):
+                members.append(pools.get(c["path"], c["name"]))
+        if role != "system":
+            if members:
+                role = "pool"
+            elif any(m for c, _ in flat([d]) for m in (c.get("mountpoints") or []) if m):
+                role = "media"
+            elif d.get("children"):
+                role = "unmounted"
+        disks.append({
+            "path": d["path"], "size": d["size"], "model": (d.get("model") or "").strip(), "serial": d.get("serial"),
+            "transport": d.get("tran"), "rotational": bool(d.get("rota")), "removable": bool(d.get("rm")),
+            "role": role, "pools": sorted(set(members)),
+            "partitions": [{"path": c["path"], "size": c["size"], "fstype": c.get("fstype"), "label": c.get("label"),
+                            "mountpoints": [m for m in (c.get("mountpoints") or []) if m],
+                            "avail": c.get("fsavail"), "used": c.get("fsused")}
+                           for c, _ in flat(d.get("children") or []) if c["type"] == "part"],
+        })
+    health = smart_summary([d["path"] for d in disks])
+    for d in disks:
+        d["smart"] = health.get(d["path"])
+    return {"disks": disks, "pools": pools_status()}
+
+
+def op_mount(a: dict) -> dict:
+    d = known_device(a.get("device"), ("part", "disk", "raid0", "raid1", "raid5", "raid6", "raid10"))
+    if disk_of(d["path"]) in protected_disks():
+        raise Refused("That's part of the system disk")
+    run([MOUNT, "add", d["path"]])
+    return {"mounted": d["path"]}
+
+
+def op_unmount(a: dict) -> dict:
+    d = known_device(a.get("device"), ("part", "disk", "raid0", "raid1", "raid5", "raid6", "raid10"))
+    if not any(m.startswith("/srv/media/") for m in (d.get("mountpoints") or []) if m):
+        raise Refused("That drive isn't mounted as media")
+    run([MOUNT, "remove", d["path"]])
+    return {"unmounted": d["path"]}
+
+
+def _new_label(label: str) -> str:
+    label = (label or "").strip()
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,15}$", label):
+        raise Refused("Name: 1-16 letters, numbers, spaces, dots, dashes")
+    return label
+
+
+def _single_partition(disk: str, partlabel: str, typecode: str) -> str:
+    for c, _ in flat([known_device(disk, ("disk",))]):
+        if c["path"] != disk:
+            run([MOUNT, "remove", c["path"]], check=False)
+    run(["wipefs", "-a", "-f", disk])
+    run(["sgdisk", "--zap-all", disk])
+    run(["sgdisk", "-n1:0:0", f"-t1:{typecode}", f"-c1:{partlabel}", disk])
+    run(["partx", "-u", disk], check=False)
+    run(["udevadm", "settle"], check=False)
+    part = disk + ("p1" if disk[-1].isdigit() else "1")
+    for _ in range(20):
+        if Path(part).exists():
+            return part
+        time.sleep(0.25)
+    raise Refused("The new partition didn't appear")
+
+
+def op_format(a: dict) -> dict:
+    disk = a.get("disk")
+    unprotected_disk(disk)
+    if a.get("confirm") != Path(disk).name:
+        raise Refused(f"Type {Path(disk).name} to confirm")
+    label = _new_label(a.get("label") or "")
+    part = _single_partition(disk, "paddock-media", "8300")
+    run(["mkfs.ext4", "-F", "-q", "-m", "0", "-T", "largefile", "-L", label, part], timeout=900)
+    run(["udevadm", "trigger", "--action=add", part], check=False)
+    return {"formatted": disk, "label": label}
+
+
+# ---- software RAID pools (mdadm) ---------------------------------------------------------------
+
+def _mdstat() -> dict[str, dict]:
+    out = {}
+    try:
+        text = Path("/proc/mdstat").read_text()
+    except OSError:
+        return out
+    cur = None
+    for line in text.splitlines():
+        m = re.match(r"^(md\d+)\s*:\s*(\S+)", line)
+        if m:
+            cur = m.group(1)
+            out[cur] = {"state_line": line, "progress": None, "action": None}
+            continue
+        if cur:
+            p = re.search(r"(resync|recovery|reshape|check)\s*=\s*([\d.]+)%.*?finish=([\d.]+min)?", line)
+            if p:
+                out[cur].update(action=p.group(1), progress=float(p.group(2)), finish=p.group(3))
+            b = re.search(r"\[(\d+)/(\d+)\]\s*\[([U_]+)\]", line)
+            if b:
+                out[cur]["bitmap"] = b.group(3)
+    return out
+
+
+def pools_status() -> list[dict]:
+    pools = []
+    stat = _mdstat()
+    for md, s in stat.items():
+        dev = f"/dev/{md}"
+        try:
+            det = dict(l.split("=", 1) for l in run(["mdadm", "--detail", "--export", dev], check=False).split() if "=" in l)
+        except ValueError:
+            det = {}
+        name = (det.get("MD_NAME") or md).split(":")[-1]
+        members = []
+        for k, v in det.items():
+            m = re.match(r"MD_DEVICE_(.+)_DEV$", k)
+            if m:
+                members.append({"device": v, "role": det.get(f"MD_DEVICE_{m.group(1)}_ROLE", "?"),
+                                "disk": disk_of(v)})
+        degraded = int(det.get("MD_DEGRADED", "0") or 0)
+        mnt = run(["findmnt", "-no", "TARGET", "-S", dev], check=False).strip()
+        use = shutil.disk_usage(mnt) if mnt else None
+        pools.append({
+            "name": name, "device": dev, "level": det.get("MD_LEVEL"), "devices": int(det.get("MD_DEVICES", "0") or 0),
+            "members": members, "degraded": degraded, "state": "degraded" if degraded else ("rebuilding" if s.get("action") in ("recovery", "resync", "reshape") else "healthy"),
+            "action": s.get("action"), "progress": s.get("progress"), "finish": s.get("finish"),
+            "mountpoint": mnt or None, "size": use.total if use else None, "used": use.used if use else None,
+        })
+    return pools
+
+
+def _pool(name: str) -> dict:
+    for p in pools_status():
+        if p["name"] == name:
+            return p
+    raise Refused(f"No pool called {name}")
+
+
+def op_pool_create(a: dict) -> dict:
+    name, level, disks = a.get("name", ""), a.get("level", ""), a.get("disks") or []
+    if not POOL_RE.match(name):
+        raise Refused("Pool name: lowercase letters, numbers and dashes")
+    if any(p["name"] == name for p in pools_status()):
+        raise Refused("A pool with that name already exists")
+    if level not in LEVELS:
+        raise Refused("Choose raid0, raid1, raid5, raid6 or raid10")
+    if not isinstance(disks, list) or len(set(disks)) != len(disks) or len(disks) < LEVELS[level]:
+        raise Refused(f"{level.upper()} needs at least {LEVELS[level]} different drives")
+    if a.get("confirm") != name:
+        raise Refused(f"Type {name} to confirm — every selected drive will be erased")
+    for d in disks:
+        unprotected_disk(d)
+    parts = [_single_partition(d, f"paddock-{name}", "FD00") for d in disks]
+    cmd = ["mdadm", "--create", f"/dev/md/{name}", "--run", "--metadata=1.2", f"--name={name}", "--homehost=any",
+           f"--level={level[4:]}", f"--raid-devices={len(parts)}"]
+    if level != "raid0":
+        cmd.append("--bitmap=internal")
+    run(cmd + parts, timeout=300)
+    run(["udevadm", "settle"], check=False)
+    md = os.path.realpath(f"/dev/md/{name}")
+    run(["mkfs.ext4", "-F", "-q", "-m", "0", "-T", "largefile", "-E", "lazy_itable_init=1,lazy_journal_init=1",
+         "-L", name[:16], md], timeout=900)
+    _save_mdadm_conf()
+    run(["udevadm", "trigger", "--action=add", md], check=False)
+    return {"created": name, "device": md, "note": "The pool is usable now; it finishes building redundancy in the background."}
+
+
+def _save_mdadm_conf() -> None:
+    scan = run(["mdadm", "--detail", "--scan"], check=False)
+    conf = Path("/etc/mdadm/mdadm.conf")
+    keep = [l for l in conf.read_text().splitlines() if not l.startswith("ARRAY")] if conf.exists() else []
+    conf.write_text("\n".join(keep + scan.strip().splitlines()) + "\n")
+
+
+def op_pool_add(a: dict) -> dict:
+    """Add a drive: as a hot spare (rebuilds automatically if a drive fails), or to grow the pool."""
+    p = _pool(a.get("name", ""))
+    disk = a.get("disk")
+    unprotected_disk(disk)
+    if a.get("confirm") != Path(disk).name:
+        raise Refused(f"Type {Path(disk).name} to confirm — the drive will be erased")
+    part = _single_partition(disk, f"paddock-{p['name']}", "FD00")
+    run(["mdadm", "--manage", p["device"], "--add", part])
+    if a.get("grow"):
+        if p["level"] not in ("raid1", "raid5", "raid6"):
+            raise Refused("Only mirror and parity pools can grow by adding a drive")
+        run(["mdadm", "--grow", p["device"], f"--raid-devices={p['devices'] + 1}"], timeout=300)
+        return {"added": part, "growing": True, "note": "Reshaping in the background; use 'Use new space' when it's done."}
+    return {"added": part, "spare": p["degraded"] == 0}
+
+
+def op_pool_expand(a: dict) -> dict:
+    p = _pool(a.get("name", ""))
+    if p["action"] == "reshape":
+        raise Refused("Still reshaping — try again when it's finished")
+    run(["resize2fs", p["device"]], timeout=3600)
+    return {"expanded": p["name"]}
+
+
+def op_pool_remove_disk(a: dict) -> dict:
+    p = _pool(a.get("name", ""))
+    dev = a.get("device")
+    if dev not in [m["device"] for m in p["members"]]:
+        raise Refused("That drive isn't in this pool")
+    if a.get("confirm") != Path(dev).name:
+        raise Refused(f"Type {Path(dev).name} to confirm")
+    run(["mdadm", "--manage", p["device"], "--fail", dev], check=False)
+    run(["mdadm", "--manage", p["device"], "--remove", dev])
+    run(["mdadm", "--zero-superblock", dev], check=False)
+    return {"removed": dev}
+
+
+def op_pool_check(a: dict) -> dict:
+    p = _pool(a.get("name", ""))
+    if p["level"] == "raid0":
+        raise Refused("Striped pools have no redundancy to check")
+    Path(f"/sys/block/{Path(os.path.realpath(p['device'])).name}/md/sync_action").write_text("check\n")
+    return {"checking": p["name"]}
+
+
+def op_pool_destroy(a: dict) -> dict:
+    p = _pool(a.get("name", ""))
+    if a.get("confirm") != f"delete {p['name']}":
+        raise Refused(f"Type \"delete {p['name']}\" to confirm — all data on the pool is lost")
+    run([MOUNT, "remove", p["device"]], check=False)
+    run(["mdadm", "--stop", p["device"]])
+    for m in p["members"]:
+        run(["mdadm", "--zero-superblock", m["device"]], check=False)
+        run(["wipefs", "-a", "-f", m["device"]], check=False)
+    _save_mdadm_conf()
+    return {"deleted": p["name"]}
+
+
+# ---- network, name, time ----------------------------------------------------------------------
+
+def _ifaces() -> list[dict]:
+    return [i for i in json.loads(run(["ip", "-j", "addr"])) if i.get("link_type") == "ether" and not i["ifname"].startswith(("wg", "pdkb"))]
+
+
+def op_network(_: dict) -> dict:
+    text = NETWORK_FILE.read_text() if NETWORK_FILE.exists() else ""
+    static = re.search(r"^Address=(.+)$", text, re.M)
+    routes = json.loads(run(["ip", "-j", "route", "show", "default"], check=False) or "[]")
+    dns = []
+    try:
+        dns = re.findall(r"^nameserver\s+(\S+)", Path("/run/systemd/resolve/resolv.conf").read_text(), re.M)
+    except OSError:
+        pass
+    return {
+        "mode": "static" if static else "dhcp",
+        "address": static.group(1) if static else None,
+        "gateway": (re.search(r"^Gateway=(.+)$", text, re.M) or [None, None])[1],
+        "dns_configured": re.findall(r"^DNS=(.+)$", text, re.M),
+        "interfaces": [{"name": i["ifname"], "mac": i.get("address"), "up": i.get("operstate") == "UP",
+                        "addresses": [f"{x['local']}/{x['prefixlen']}" for x in i.get("addr_info", []) if x.get("scope") == "global"]}
+                       for i in _ifaces()],
+        "default_gateway": routes[0].get("gateway") if routes else None,
+        "dns": dns,
+        "pending_revert": NETWORK_BACKUP.exists(),
+    }
+
+
+def op_network_set(a: dict) -> dict:
+    mode = a.get("mode")
+    lines = ["# Paddock OS network settings (Manage server → System)", "[Match]", "Name=en* eth*", "", "[Network]"]
+    if mode == "dhcp":
+        lines += ["DHCP=yes"]
+    elif mode == "static":
+        try:
+            addr = ipaddress.ip_interface(a.get("address", ""))
+            gw = ipaddress.ip_address(a.get("gateway", ""))
+            dns = [str(ipaddress.ip_address(x)) for x in (a.get("dns") or [])][:3]
+        except ValueError as e:
+            raise Refused(f"Invalid address: {e}")
+        if addr.version != 4 or gw not in addr.network or addr.ip == gw:
+            raise Refused("The gateway must be another address on the same network")
+        lines += [f"Address={addr}", f"Gateway={gw}"] + [f"DNS={d}" for d in dns]
+    else:
+        raise Refused("mode must be dhcp or static")
+    lines += ["MulticastDNS=yes", "LLMNR=no", "IPv6AcceptRA=yes", ""]
+    if NETWORK_FILE.exists() and not NETWORK_BACKUP.exists():
+        shutil.copy2(NETWORK_FILE, NETWORK_BACKUP)
+    NETWORK_FILE.write_text("\n".join(lines) + "\n")
+    # If nobody confirms from the new address within 2 minutes, put the old settings back.
+    run(["systemctl", "stop", "paddock-net-revert.timer"], check=False)
+    run(["systemd-run", "--quiet", "--collect", "--unit=paddock-net-revert", "--on-active=120",
+         "/usr/bin/python3", "/usr/local/sbin/paddock-agent", "--revert-network"])
+    later("/usr/bin/networkctl", "reload", seconds=1)
+    later("/usr/bin/networkctl", "reconfigure", *[i["ifname"] for i in _ifaces()], seconds=2)
+    return {"applied": mode, "revert_in_seconds": 120}
+
+
+def op_network_confirm(_: dict) -> dict:
+    run(["systemctl", "stop", "paddock-net-revert.timer"], check=False)
+    NETWORK_BACKUP.unlink(missing_ok=True)
+    return {"confirmed": True}
+
+
+def revert_network() -> None:
+    if NETWORK_BACKUP.exists():
+        shutil.move(NETWORK_BACKUP, NETWORK_FILE)
+        run(["networkctl", "reload"], check=False)
+        run(["networkctl", "reconfigure", *[i["ifname"] for i in _ifaces()]], check=False)
+
+
+def op_hostname(a: dict) -> dict:
+    name = (a.get("hostname") or "").lower()
+    if not HOST_RE.match(name):
+        raise Refused("Name: letters, numbers and dashes (up to 40)")
+    Path("/etc/hostname").write_text(name + "\n")
+    hosts = Path("/etc/hosts").read_text().splitlines()
+    hosts = [l for l in hosts if not l.startswith("127.0.1.1")] + [f"127.0.1.1\t{name}"]
+    Path("/etc/hosts").write_text("\n".join(hosts) + "\n")
+    run(["hostname", name])
+    env = PADDOCK_ENV.read_text()
+    PADDOCK_ENV.write_text(re.sub(r"^PADDOCK_HOSTNAMES=.*$", f"PADDOCK_HOSTNAMES={name}.local", env, flags=re.M))
+    run(["systemctl", "restart", "systemd-resolved"], check=False)
+    later("systemctl", "restart", "paddock")
+    return {"hostname": name, "url": f"https://{name}.local"}
+
+
+def op_timezone(a: dict) -> dict:
+    tz = a.get("timezone") or ""
+    zone = Path("/usr/share/zoneinfo") / tz
+    if not re.match(r"^[A-Za-z_]+(/[A-Za-z0-9_+-]+){0,2}$", tz) or not zone.is_file():
+        raise Refused("Unknown time zone")
+    Path("/etc/localtime").unlink(missing_ok=True)
+    Path("/etc/localtime").symlink_to(zone)
+    Path("/etc/timezone").write_text(tz + "\n")
+    later("systemctl", "restart", "paddock")
+    return {"timezone": tz}
+
+
+# ---- info, power, logs --------------------------------------------------------------------------
+
+def _kv(path: str) -> dict:
+    out = {}
+    try:
+        for line in Path(path).read_text().splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                out[k] = v.strip().strip('"')
+    except OSError:
+        pass
+    return out
+
+
+def _temps() -> list[dict]:
+    out = []
+    for hw in Path("/sys/class/hwmon").glob("hwmon*"):
+        try:
+            name = (hw / "name").read_text().strip()
+        except OSError:
+            continue
+        for t in sorted(hw.glob("temp*_input"))[:4]:
+            try:
+                label = (hw / t.name.replace("_input", "_label")).read_text().strip()
+            except OSError:
+                label = ""
+            try:
+                out.append({"sensor": name, "label": label, "celsius": int(t.read_text()) / 1000})
+            except (OSError, ValueError):
+                pass
+    return out[:16]
+
+
+def op_info(_: dict) -> dict:
+    mem = {}
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        k, v = line.split(":", 1)
+        mem[k] = int(v.split()[0]) * 1024
+    cpu = re.search(r"^model name\s*:\s*(.+)$", Path("/proc/cpuinfo").read_text(), re.M)
+    units = {}
+    for u in ("paddock", "paddock-wg", "systemd-networkd", "systemd-timesyncd"):
+        units[u] = run(["systemctl", "is-active", u], check=False).strip()
+    tz = Path("/etc/timezone").read_text().strip() if Path("/etc/timezone").exists() else "UTC"
+    return {
+        "paddock_os": _kv("/etc/paddock-os-release"),
+        "debian": _kv("/etc/os-release").get("PRETTY_NAME"),
+        "kernel": os.uname().release,
+        "hostname": os.uname().nodename,
+        "uptime": float(Path("/proc/uptime").read_text().split()[0]),
+        "load": os.getloadavg(),
+        "cpu": cpu.group(1).strip() if cpu else None,
+        "cores": os.cpu_count(),
+        "memory": {"total": mem.get("MemTotal"), "available": mem.get("MemAvailable")},
+        "temperatures": _temps(),
+        "boot": "UEFI" if Path("/sys/firmware/efi").exists() else "BIOS",
+        "time_synced": Path("/run/systemd/timesync/synchronized").exists(),
+        "timezone": tz,
+        "services": units,
+        "live": "boot=live" in Path("/proc/cmdline").read_text(),
+        "pools_degraded": sum(1 for p in pools_status() if p["degraded"]),
+    }
+
+
+def op_power(a: dict) -> dict:
+    action = a.get("action")
+    cmd = {"reboot": ["systemctl", "reboot"], "poweroff": ["systemctl", "poweroff"],
+           "restart-paddock": ["systemctl", "restart", "paddock"]}.get(action)
+    if not cmd:
+        raise Refused("action must be reboot, poweroff or restart-paddock")
+    later(*cmd)
+    return {"scheduled": action}
+
+
+def op_logs(a: dict) -> dict:
+    unit = a.get("unit", "paddock")
+    if unit not in LOG_UNITS:
+        raise Refused("Unknown log")
+    lines = max(10, min(int(a.get("lines", 200)), 2000))
+    sel = ["-k"] if unit == "kernel" else ["-u", unit]
+    return {"unit": unit, "text": run(["journalctl", *sel, "-n", str(lines), "--no-pager", "-o", "short-iso"], check=False)}
+
+
+OPS = {
+    "info": op_info, "disks": op_disks, "mount": op_mount, "unmount": op_unmount, "format": op_format,
+    "pool_create": op_pool_create, "pool_add": op_pool_add, "pool_expand": op_pool_expand,
+    "pool_remove_disk": op_pool_remove_disk, "pool_check": op_pool_check, "pool_destroy": op_pool_destroy,
+    "network": op_network, "network_set": op_network_set, "network_confirm": op_network_confirm,
+    "hostname": op_hostname, "timezone": op_timezone, "power": op_power, "logs": op_logs,
+}
+
+
+def main() -> None:
+    if sys.argv[1:] == ["--revert-network"]:
+        revert_network()
+        return
+    raw = sys.stdin.buffer.readline(65536)
+    try:
+        req = json.loads(raw or b"{}")
+        op = OPS.get(req.get("op"))
+        if not op:
+            raise Refused("Unknown operation")
+        args = req.get("args") or {}
+        if not isinstance(args, dict):
+            raise Refused("Bad arguments")
+        resp = {"ok": True, "result": op(args)}
+    except Refused as e:
+        resp = {"ok": False, "error": str(e)}
+    except subprocess.TimeoutExpired:
+        resp = {"ok": False, "error": "The operation timed out"}
+    except Exception as e:  # noqa: BLE001 - report, don't crash the socket
+        resp = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    sys.stdout.write(json.dumps(resp) + "\n")
+    sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    main()

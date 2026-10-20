@@ -1,0 +1,87 @@
+# Paddock on TrueNAS SCALE (24.10 "Electric Eel" or newer) — https://github.com/AidenMoyer/paddock
+# Apps → Discover Apps → ⋮ → Install via YAML → paste this file, then edit the marked lines.
+#
+# Datasets (create them first, owned by the "apps" user, uid/gid 568):
+#   /mnt/tank/apps/paddock          ← Paddock's own data (database, cache, keys) — SNAPSHOT THIS
+#   /mnt/tank/media/...             ← your existing media datasets (read-only is fine)
+#   /mnt/tank/media/photos          ← writable, receives phone backups
+#   /mnt/tank/engineering           ← writable if you want the _Inbox auto-filing
+#
+# Only ONE port ever needs to reach the internet: UDP 51820 for the encrypted tunnel, and
+# Paddock can open it on your router itself (Manage server → Remote access). Never forward 8443.
+
+name: paddock
+
+services:
+  paddock:
+    image: ghcr.io/aidenmoyer/paddock:latest        # release YAMLs pin an exact version
+    restart: unless-stopped
+    network_mode: host                               # LAN discovery, router port-mapping, real client IPs
+    environment:
+      PADDOCK_HOSTNAMES: "paddock.local,truenas.local"   # ← names you use on the LAN (go into the TLS cert)
+      PADDOCK_WG_ENABLED: "1"                         # remote access via the tunnel sidecar below
+      PADDOCK_WG_PORT: "51820"
+      # PADDOCK_WG_ENDPOINT: "home.example.com:51820" # optional: your own hostname; otherwise auto from router
+      PADDOCK_HWACCEL: "auto"                         # auto | nvenc | qsv | vaapi | none
+      PADDOCK_MEDIA_ROOTS: "/media"
+      TZ: "America/Chicago"                           # ← your timezone (capture dates, nightly backups)
+    volumes:
+      - /mnt/tank/apps/paddock:/data
+      - /mnt/tank/media/movies:/media/movies:ro       # ← your datasets; :ro wherever Paddock shouldn't write
+      - /mnt/tank/media/tv:/media/tv:ro
+      - /mnt/tank/media/music:/media/music:ro
+      - /mnt/tank/media/photos:/media/photos          # writable: phone backups land here
+      - /mnt/tank/footage:/media/footage:ro           # RED / BRAW camera originals
+      - /mnt/tank/engineering:/media/engineering      # writable: _Inbox auto-filing
+    # --- GPU transcoding (pick one) ---
+    devices:
+      - /dev/dri:/dev/dri                             # Intel Quick Sync / AMD VAAPI (remove if none)
+    group_add:
+      - "44"                                          # video  (check: getent group video)
+      - "107"                                         # render (check: getent group render)
+    # NVIDIA: instead of /dev/dri, give the app a GPU in the TrueNAS UI, or uncomment:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices: [{ driver: nvidia, count: 1, capabilities: [gpu, video, compute, utility] }]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g
+
+  # Applies the tunnel config Paddock writes and firewalls it so tunnel peers can reach
+  # Paddock's HTTPS port and nothing else on your NAS or network.
+  paddock-wg:
+    image: ghcr.io/aidenmoyer/paddock-wg:latest
+    restart: unless-stopped
+    network_mode: host
+    user: "0:568"                                    # root for netlink, but no file-permission override
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      WG_DIR: /data/wireguard
+    volumes:
+      - /mnt/tank/apps/paddock/wireguard:/data/wireguard
+    depends_on: [paddock]
+
+  # --- optional: live transcription on your GPU (speaches / faster-whisper) ---
+  # Then: Manage server → Transcription → Speech server → http://127.0.0.1:8000/v1
+  # speaches:
+  #   image: ghcr.io/speaches-ai/speaches:latest-cuda   # :latest-cpu without a GPU
+  #   restart: unless-stopped
+  #   ports: ["127.0.0.1:8000:8000"]                   # loopback only — Paddock is on the host network
+  #   volumes: [/mnt/tank/apps/speaches:/home/ubuntu/.cache/huggingface/hub]
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+
+  # Local AI: install the official "Ollama" app from the TrueNAS catalog (give it the GPU),
+  # pull qwen3.8:27b from Manage server → Assistant, and set its env:
+  #   OLLAMA_FLASH_ATTENTION=1  OLLAMA_KV_CACHE_TYPE=q8_0  OLLAMA_NUM_PARALLEL=1  OLLAMA_KEEP_ALIVE=30m

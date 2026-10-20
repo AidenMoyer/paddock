@@ -1,0 +1,11 @@
+[Unit]
+Description=Paddock: mount /dev/%I for media
+BindsTo=dev-%i.device
+After=dev-%i.device local-fs.target
+ConditionKernelCommandLine=!paddock.installer
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/paddock-mount add /dev/%I
+ExecStop=/usr/local/sbin/paddock-mount remove /dev/%I

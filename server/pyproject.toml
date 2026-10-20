@@ -1,0 +1,24 @@
+[project]
+name = "paddock"
+version = "0.1.0"
+description = "Self-hosted media, cinema-footage and engineering vault for TrueNAS"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.142", "uvicorn[standard]>=0.54", "python-multipart>=0.0.32", "pydantic>=2.13", "pillow>=12",
+  "pillow-heif>=1.8", "mutagen>=1.48", "numpy>=2.5", "cryptography>=50", "httpx>=0.28", "segno>=1.6", "anthropic>=1.11",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9"]
+
+[project.scripts]
+paddock = "paddock.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["paddock*"]
+
+[tool.setuptools.package-data]
+paddock = ["web/*", "web/static/*", "web/static/js/*", "web/static/js/views/*", "web/static/vendor/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

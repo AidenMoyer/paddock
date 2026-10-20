@@ -1,0 +1,26 @@
+[Unit]
+Description=Paddock tunnel (WireGuard): paired phones and linked servers reach Paddock and nothing else
+Documentation=https://github.com/AidenMoyer/paddock/blob/main/docs/SECURITY.md
+After=paddock.service network-online.target
+Wants=network-online.target
+ConditionKernelCommandLine=!paddock.installer
+
+[Service]
+Environment=WG_DIR=/srv/data/paddock/wireguard
+ExecStartPre=+/usr/local/sbin/paddock-prepare
+ExecStart=/usr/local/sbin/paddock-wg
+Restart=always
+RestartSec=5
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/data/paddock/wireguard
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=no
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
