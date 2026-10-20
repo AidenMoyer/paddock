@@ -144,7 +144,9 @@ fun PaddockRoot() {
             }
             composable("browse/{kind}") { Box(Modifier.statusBarsPadding()) { BrowseScreen(it.arguments?.getString("kind") ?: "movies", nav) } }
             composable("group/{key}") { Box(Modifier.statusBarsPadding()) { GroupScreen(URLDecoder.decode(it.arguments?.getString("key") ?: "", "UTF-8"), nav) } }
-            composable("watch/{id}") { WatchScreen(it.arguments?.getString("id")!!.toInt(), nav) }
+            composable("watch/{id}?party={party}", arguments = listOf(navArgument("party") { type = NavType.StringType; nullable = true; defaultValue = null })) {
+                WatchScreen(it.arguments?.getString("id")!!.toInt(), nav, it.arguments?.getString("party"))
+            }
             composable("item/{id}") { Box(Modifier.statusBarsPadding()) { ItemScreen(it.arguments?.getString("id")!!.toInt(), nav) } }
             composable("project/{id}") { Box(Modifier.statusBarsPadding()) { ProjectScreen(it.arguments?.getString("id")!!.toInt(), nav) } }
         }

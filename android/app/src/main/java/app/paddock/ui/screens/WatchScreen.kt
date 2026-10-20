@@ -48,6 +48,15 @@ import app.paddock.data.Item
 import app.paddock.data.LiveCaptions
 import app.paddock.data.Playback
 import app.paddock.data.Quality
+import app.paddock.live.PartyInfo
+import app.paddock.live.PartyPanel
+import app.paddock.live.PartySession
+import app.paddock.live.ReactionsOverlay
+import app.paddock.live.VoiceSession
+import app.paddock.live.WatchTogetherDialog
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import app.paddock.player.Players
 import app.paddock.ui.*
 import app.paddock.ui.theme.LocalPaddock
@@ -77,7 +86,7 @@ object NowPlaying {
 @OptIn(UnstableApi::class)
 @kotlin.OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WatchScreen(id: Int, nav: Nav) {
+fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
     val app = PaddockApp.instance
     val api = app.api
     val p = LocalPaddock.current
@@ -119,7 +128,33 @@ fun WatchScreen(id: Int, nav: Nav) {
     val inPip by NowPlaying.inPip
     val queue = NowPlaying.queue
     fun next(): Item? = queue.firstOrNull { it.id != id } ?: upNext.firstOrNull()
-    fun playNext() { next()?.let { nav.replace(it) } }
+
+    // ---- watch party: the shared clock decides play/pause; voice is optional
+    val party = remember(id, partyId) { partyId?.let { PartySession(it, player, id) } }
+    var voice by remember(partyId) { mutableStateOf<VoiceSession?>(null) }
+    var showTogether by remember { mutableStateOf(false) }
+    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted && partyId != null) voice = VoiceSession("party:$partyId").also { it.start() }
+        else if (!granted) android.widget.Toast.makeText(ctx, "Voice needs the microphone permission", android.widget.Toast.LENGTH_SHORT).show()
+    }
+    DisposableEffect(party) { party?.start(); onDispose { party?.close() } }
+    DisposableEffect(partyId) { onDispose { voice?.stop(); player.volume = 1f } }
+    LaunchedEffect(voice) {          // lower the movie while friends talk
+        while (isActive && voice != null) { player.volume = if (voice?.othersSpeaking() == true) 0.45f else 1f; delay(200) }
+    }
+    val switchTo = party?.switchTo?.value
+    LaunchedEffect(switchTo) { if (switchTo != null && switchTo != id) { nav.back(); nav.go("watch/$switchTo?party=$partyId") } }
+    val ended = party?.ended?.value
+    LaunchedEffect(ended) {
+        if (ended != null) {
+            android.widget.Toast.makeText(ctx, ended, android.widget.Toast.LENGTH_SHORT).show()
+            voice?.stop(); voice = null; nav.back(); nav.go("watch/$id")
+        }
+    }
+    fun playNext() {
+        val n = next() ?: return
+        if (party != null) { if (party.canControl.value) party.switchItem(n.id, n.title) } else nav.replace(n)
+    }
 
     fun applyCaptions() {
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
@@ -130,7 +165,7 @@ fun WatchScreen(id: Int, nav: Nav) {
         player.setMediaItem(app.players.mediaItem(api, q, plan, item.title), at)
         applyCaptions()
         player.prepare()
-        player.playWhenReady = true
+        player.playWhenReady = partyId == null          // in a watch party the shared clock starts playback
     }
 
     DisposableEffect(id) {
@@ -202,6 +237,7 @@ fun WatchScreen(id: Int, nav: Nav) {
                 for (c in active) Text(c.text, color = Color.White, fontSize = if (inPip) 10.sp else 16.sp, textAlign = TextAlign.Center,
                     modifier = Modifier.background(Color(0xC8080808), RoundedCornerShape(4.dp)).padding(horizontal = 8.dp, vertical = 2.dp))
             }
+            if (party != null) ReactionsOverlay(party)
             if (plan.mode == "unavailable") Text(plan.reason ?: "Can't play this", color = Color.White,
                 modifier = Modifier.align(Alignment.Center).padding(24.dp), textAlign = TextAlign.Center)
             if (!inPip) PlayerControls(
@@ -239,6 +275,7 @@ fun WatchScreen(id: Int, nav: Nav) {
                                 scope.launch { runCatching { api.patch<JsonObject>("/api/items/$id", buildJsonObject { put("favorite", !favorite) }); favorite = !favorite } }
                             }
                         }
+                        if (party == null) item { PillButton("Watch together", Icons.Filled.Groups) { showTogether = true } }
                         item { PillButton("Share", Icons.Filled.Share) { scope.launch { shareLink(ctx, id) } } }
                         if (hasLive) item {
                             PillButton(if (liveOn) "Live captions on" else "Live captions", Icons.Filled.ClosedCaption) {
@@ -252,6 +289,11 @@ fun WatchScreen(id: Int, nav: Nav) {
                                 modifier = Modifier.clip(RoundedCornerShape(14.dp)).background(p.surface2).clickable { nav.go("search?q=$t") }.padding(horizontal = 10.dp, vertical = 4.dp)) }
                         }
                     } else Spacer(Modifier.height(12.dp))
+                    if (party != null) PartyPanel(party, voice,
+                        onJoinVoice = { micPermission.launch(Manifest.permission.RECORD_AUDIO) },
+                        onLeaveVoice = { voice?.stop(); voice = null; player.volume = 1f },
+                        onLeave = { nav.back(); nav.go("watch/$id") },
+                        onEnd = { scope.launch { runCatching { api.delete("/api/parties/$partyId") } } })
                     Details(item)
                 }
                 if (queue.any { it.id != id }) {
@@ -272,6 +314,21 @@ fun WatchScreen(id: Int, nav: Nav) {
                 item { Spacer(Modifier.height(24.dp)) }
             }
         }
+    }
+
+    if (showTogether) {
+        WatchTogetherDialog(onDismiss = { showTogether = false }, onStart = { everyone, hostOnly, wait ->
+            showTogether = false
+            scope.launch {
+                runCatching {
+                    api.post<PartyInfo>("/api/parties", buildJsonObject {
+                        put("item_id", id); put("everyone", everyone); put("control", if (hostOnly) "host" else "everyone")
+                        put("wait_for_all", wait); put("position", player.currentPosition / 1000.0)
+                    })
+                }.onSuccess { p -> nav.back(); nav.go("watch/$id?party=${p.id}") }
+                    .onFailure { android.widget.Toast.makeText(ctx, it.message ?: "Couldn't start the party", android.widget.Toast.LENGTH_SHORT).show() }
+            }
+        })
     }
 
     if (showSheet) {

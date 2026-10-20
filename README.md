@@ -48,6 +48,8 @@ building a RAID 1 pool) before it's published.
 | | |
 |---|---|
 | **Watch** | Movies, shows (seasons/episodes), music (albums, mini-player), home videos. Player with **Auto** (adaptive), **Original** (untouched bitstream) and 4K→360p quality you can switch any time; GPU transcoding (NVENC / Quick Sync / VAAPI) with automatic CPU fallback; segment cache, encode-ahead with throttling, optional pre-transcode; scrub previews; resume; PiP; keyboard shortcuts. Originals are never modified. |
+| **Watch parties** | Watch together with friends and family wherever they are: one shared clock keeps every player in step through play, pause, skips and moving to the next video, waits for anyone who's buffering, and everyone streams in their own quality. Chat, emoji reactions over the video, invite links, and a *happening now* list on Home. |
+| **Voice chat** | Built into Paddock, no outside service: echo-cancelled microphone audio as Opus, relayed by your server over the same connection the app already uses (at home or through the tunnel). Mute, deafen, talking indicators, and the movie ducks while friends talk. Voice rooms are generic, so future features can use them too. |
 | **Live captions** | Local Whisper transcribes just ahead of the playhead on web and Android; finished transcripts make *spoken words searchable*. |
 | **Photos** | Phone backup (resumable, deduplicated, keeps GPS), day timeline, “On this day”, places (no map service), full-screen viewer. |
 | **RED / cinema** | R3D clips cataloged as one item (all spans), camera/reel/clip from names, RMD look data, REDline metadata & proxies when installed, BRAW, shoot-day clip logs, verified **card offload** with checksums. |

@@ -36,6 +36,7 @@ fun HomeScreen(nav: Nav) {
                 when (it) { "all" -> {}; "photos" -> nav.go("photos"); else -> nav.go("browse/$it") }
             }
         }
+        item { app.paddock.live.PartiesRow(nav) }
         item {
             LoadView(load, retry) { feed ->
                 Column {
