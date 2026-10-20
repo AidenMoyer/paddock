@@ -198,10 +198,15 @@ rm -rf "$M/sound" "$M/drivers/net/wireless" "$M/net/wireless" "$M/net/mac80211" 
   "$M/drivers/net/can" "$M/net/can" "$M/drivers/nfc" "$M/net/nfc" "$M/drivers/input/joystick" \
   "$M/drivers/input/touchscreen" "$M/drivers/input/tablet" "$M/drivers/gpu/drm/radeon" "$M/fs/ocfs2" "$M/fs/gfs2"
 find "$M/drivers/media" -mindepth 1 -maxdepth 1 ! -name cec ! -name mc -exec rm -rf {} +
+# drop leftovers that depended on a removed subsystem (e.g. a display driver's IR-remote part)
+for _ in 1 2 3 4; do
+  orphans="$(in_chroot depmod -a -e -F "/boot/System.map-$KVER" "$KVER" 2>&1 \
+    | sed -n 's|.*WARNING: \(/lib/modules/[^ ]*\.ko[^ ]*\) needs unknown symbol.*|\1|p' | sort -u)"
+  [ -z "$orphans" ] && break
+  echo "$orphans" | while read -r m; do echo "    removing orphaned module $(basename "$m")"; rm -f "$ROOT$m"; done
+done
 in_chroot depmod -a "$KVER"
-# every module we kept must still load (no dependency on something we removed)
-bad="$(in_chroot depmod -a -e -F "/boot/System.map-$KVER" "$KVER" 2>&1 | grep -i 'unknown symbol' || true)"
-[ -z "$bad" ] || { echo "module trimming broke dependencies:" >&2; echo "$bad" | head >&2; exit 1; }
+# everything Paddock relies on must still load
 for m in i915 xe amdgpu ahci nvme e1000e igb igc r8169 ext4 xfs btrfs ntfs3 exfat vfat raid456 raid1 raid0 raid10 wireguard usb-storage uas squashfs overlay; do
   in_chroot modprobe -S "$KVER" --show-depends "$m" >/dev/null || { echo "module $m is missing" >&2; exit 1; }
 done
@@ -223,8 +228,8 @@ du -sh "$ROOT" | sed 's/^/    system size: /'
 log "building the ISO"
 cp "$ROOT/boot/vmlinuz-$KVER" "$ISO/live/vmlinuz"
 cp "$ROOT/boot/initrd.img-$KVER" "$ISO/live/initrd.img"
-mksquashfs "$ROOT" "$ISO/live/filesystem.squashfs" -comp zstd -Xcompression-level 19 -b 1M -noappend -quiet \
-  -e proc sys dev run tmp
+# proc/sys/dev/run/tmp are empty here and must stay as mount points
+mksquashfs "$ROOT" "$ISO/live/filesystem.squashfs" -comp zstd -Xcompression-level 19 -b 1M -noappend -quiet
 touch "$ISO/PADDOCK_OS"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@EDITION@/$([ "$VARIANT" = nvidia ] && echo ' (NVIDIA)')/g" \
   "$HERE/iso/grub.cfg" > "$ISO/boot/grub/grub.cfg"

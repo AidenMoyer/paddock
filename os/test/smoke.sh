@@ -13,7 +13,7 @@ MODE="${2:-full}"
 W="$(mktemp -d)"
 trap 'pkill -f "qemu-system-x86_64.*$W" 2>/dev/null || true' EXIT
 KVM=(); [ -w /dev/kvm ] && KVM=(-enable-kvm -cpu host)
-QEMU=(qemu-system-x86_64 "${KVM[@]}" -m 3072 -smp 2 -nographic -no-reboot -serial mon:stdio)
+QEMU=(qemu-system-x86_64 "${KVM[@]}" -m 3072 -smp 2 -nographic -no-reboot)
 OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.fd
 OVMF_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd
 

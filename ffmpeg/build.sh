@@ -4,7 +4,7 @@
 #   GPU:     Intel Quick Sync (oneVPL) and VAAPI (Intel/AMD), NVIDIA NVENC/NVDEC + CUDA scaling
 #   CPU:     x264 for H.264, dav1d for AV1, zimg for HDR → SDR tone-mapping
 #   Speech:  the whisper filter (whisper.cpp, CPU; picks the best instruction set at run time)
-#   Off:     network protocols, capture devices, ffplay, docs — less code, less attack surface
+#   Off:     network protocols, capture devices (only lavfi test sources stay), ffplay, docs
 #
 # Runs on Debian 13 "trixie" (a container or chroot) and produces
 #   out/paddock-ffmpeg-<version>-<rev>-<arch>.tar.zst   → unpacks to /opt/paddock-ffmpeg
@@ -72,7 +72,7 @@ cd ffmpeg
 # shared libav* so ffmpeg and ffprobe don't each carry a copy (library paths are set with patchelf below)
 ./configure --prefix="$PREFIX" --extra-version=paddock$REV \
   --enable-gpl --enable-version3 --disable-autodetect --enable-shared --disable-static \
-  --disable-doc --disable-ffplay --disable-debug --disable-network --disable-avdevice --disable-indevs --disable-outdevs \
+  --disable-doc --disable-ffplay --disable-debug --disable-network --disable-indevs --enable-indev=lavfi --disable-outdevs \
   --enable-pthreads --enable-zlib --enable-iconv \
   --enable-libx264 --enable-libzimg --enable-libdav1d --enable-whisper \
   "${gpu[@]}" \
