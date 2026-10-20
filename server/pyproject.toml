@@ -1,6 +1,6 @@
 [project]
 name = "paddock"
-version = "0.1.0"
+version = "0.2.0"
 description = "Self-hosted media, cinema-footage and engineering vault for TrueNAS"
 requires-python = ">=3.11"
 dependencies = [

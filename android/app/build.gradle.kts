@@ -15,7 +15,7 @@ android {
         targetSdk = 34
         // CI passes -PversionName=0.1.0 -PversionCode=<n> from the release tag
         versionCode = (project.findProperty("versionCode") as String?)?.toInt() ?: 1
-        versionName = (project.findProperty("versionName") as String?) ?: "0.1.0"
+        versionName = (project.findProperty("versionName") as String?) ?: "0.2.0"
     }
 
     // Release signing key comes from the environment (GitHub Actions secrets, or a local keystore);
