@@ -98,7 +98,8 @@ jobs:
           app="ghcr.io/$owner/paddock"; wg="ghcr.io/$owner/paddock-wg"
           docker build -f deploy/Dockerfile -t "$app:$VERSION" -t "$app:latest" .
           docker build -t "$wg:$VERSION" -t "$wg:latest" deploy/wireguard
-          docker run --rm --entrypoint /opt/paddock-ffmpeg/bin/ffmpeg "$app:$VERSION" -hide_banner -filters | grep -qw whisper
+          docker run --rm --entrypoint /opt/paddock-ffmpeg/bin/ffmpeg "$app:$VERSION" -hide_banner -filters > filters.txt
+          grep -qw whisper filters.txt
           if [ "$PUBLISH" = true ]; then
             echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             for t in "$app:$VERSION" "$app:latest" "$wg:$VERSION" "$wg:latest"; do docker push "$t"; done

@@ -105,15 +105,16 @@ Source of this build script: https://github.com/AidenMoyer/paddock/tree/main/ffm
 EOF
 
 # smoke test: the features Paddock relies on are really there
-"$PREFIX/bin/ffmpeg" -hide_banner -filters | grep -qw whisper
-"$PREFIX/bin/ffmpeg" -hide_banner -filters | grep -qw zscale
-"$PREFIX/bin/ffmpeg" -hide_banner -filters | grep -qw scale_cuda
-"$PREFIX/bin/ffmpeg" -hide_banner -encoders | grep -qw libx264
-"$PREFIX/bin/ffmpeg" -hide_banner -encoders | grep -qw h264_nvenc
-"$PREFIX/bin/ffmpeg" -hide_banner -encoders | grep -qw h264_vaapi
-if [ "$ARCH" = amd64 ]; then "$PREFIX/bin/ffmpeg" -hide_banner -encoders | grep -qw h264_qsv; fi
+# (capture first: `ffmpeg | grep -q` would die of SIGPIPE under pipefail)
+features="$("$PREFIX/bin/ffmpeg" -hide_banner -filters) $("$PREFIX/bin/ffmpeg" -hide_banner -encoders)"
+want=(whisper zscale scale_cuda libx264 h264_nvenc h264_vaapi)
+[ "$ARCH" = amd64 ] && want+=(h264_qsv)
+for f in "${want[@]}"; do
+  grep -qw "$f" <<<"$features" || { echo "missing FFmpeg feature: $f" >&2; exit 1; }
+done
 "$PREFIX/bin/ffmpeg" -hide_banner -v error -f lavfi -i testsrc2=d=1 -vf zscale=t=linear,format=gbrpf32le,tonemap=hable,zscale=t=bt709:m=bt709,format=yuv420p \
   -c:v libx264 -f null -
+echo "    features ok: ${want[*]}, HDR tone-mapping + x264 encode"
 
 tar -C "$(dirname "$PREFIX")" -I 'zstd -19 -T0' -cf "$OUT/$NAME.tar.zst" "$(basename "$PREFIX")"
 ( cd "$OUT" && sha256sum "$NAME.tar.zst" > "$NAME.tar.zst.sha256" )

@@ -145,7 +145,7 @@ fi
 # ---------------------------------------------------------------------------------------------
 log "Paddock FFmpeg ($(basename "$FFMPEG_TAR"))"
 tar -C "$ROOT/opt" -I zstd -xf "$FFMPEG_TAR"
-in_chroot /opt/paddock-ffmpeg/bin/ffmpeg -hide_banner -version | head -n1
+ffver="$(in_chroot /opt/paddock-ffmpeg/bin/ffmpeg -hide_banner -version)"; echo "    ${ffver%%$'\n'*}"
 missing="$(in_chroot ldd /opt/paddock-ffmpeg/bin/ffmpeg | grep 'not found' || true)"
 [ -z "$missing" ] || { echo "ffmpeg is missing libraries:" >&2; echo "$missing" >&2; exit 1; }
 
