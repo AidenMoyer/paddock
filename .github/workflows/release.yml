@@ -155,8 +155,9 @@ jobs:
           PADDOCK_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
           if [ -n "$KEYSTORE_B64" ]; then
-            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            printf '%s' "$KEYSTORE_B64" | tr -d '\r\n ' | base64 -d > "$RUNNER_TEMP/release.jks"
             export PADDOCK_KEYSTORE="$RUNNER_TEMP/release.jks"
+            export PADDOCK_KEYSTORE_PASSWORD="$(printf '%s' "$PADDOCK_KEYSTORE_PASSWORD" | tr -d '\r\n')"
           elif [ "$PUBLISH" = true ]; then
             echo "::error::ANDROID_KEYSTORE_BASE64 secret is missing; releases must be signed"; exit 1
           fi
