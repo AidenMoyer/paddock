@@ -21,6 +21,12 @@ OVMF_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd
 step() { echo; echo "==== $*"; }
 die() { echo "FAILED: $*" >&2; for f in "$W"/*.log; do echo "---- $f (last 60 lines)"; tail -n 60 "$f"; done; exit 1; }
 
+stop_vm() {  # pid — QEMU may have been started in a subshell, so `wait` can't be used
+  kill "$1" 2>/dev/null || true
+  for _ in $(seq 1 30); do kill -0 "$1" 2>/dev/null || return 0; sleep 1; done
+  kill -9 "$1" 2>/dev/null || true; sleep 1
+}
+
 wait_health() {  # port seconds logfile
   local end=$((SECONDS + $2))
   while [ $SECONDS -lt $end ]; do
@@ -40,7 +46,7 @@ pid=$!
 wait_health 18443 300 || die "Paddock did not come up in live mode"
 echo "Paddock answers in live mode"
 curl -fsk https://127.0.0.1:18443/api/auth/state | grep -q '"setup_required":true' || die "unexpected first-run state"
-kill "$pid"; wait "$pid" 2>/dev/null || true
+stop_vm "$pid"
 [ "$MODE" = live ] && { echo "live test passed"; exit 0; }
 
 step "unattended install"
@@ -86,7 +92,7 @@ echo "RAID 1 pool created, mounted and visible to Paddock"
 api -X PUT -d '{"engine":"ffmpeg"}' https://127.0.0.1:18444/api/admin/stt | grep -q '"ffmpeg_has_whisper":true' \
   || die "Paddock's FFmpeg on the OS has no whisper filter"
 echo "built-in transcription (FFmpeg whisper) is available"
-kill "$pid"; wait "$pid" 2>/dev/null || true
+stop_vm "$pid"
 
 step "installed system, UEFI boot (pool must come back after a reboot)"
 cp "$OVMF_VARS" "$W/vars.fd"
@@ -98,6 +104,6 @@ for _ in $(seq 1 20); do
 done
 api https://127.0.0.1:18445/api/admin/system/disks | grep -q '"mountpoint":"/srv/media/ci"' || die "the pool did not come back after a reboot"
 echo "Paddock answers after a UEFI boot and the pool is mounted again"
-kill "$pid"; wait "$pid" 2>/dev/null || true
+stop_vm "$pid"
 
 echo; echo "all Paddock OS tests passed"
