@@ -201,13 +201,8 @@ rm -rf "$M/sound" "$M/drivers/net/wireless" "$M/net/wireless" "$M/net/mac80211" 
   "$M/drivers/net/can" "$M/net/can" "$M/drivers/nfc" "$M/net/nfc" "$M/drivers/input/joystick" \
   "$M/drivers/input/touchscreen" "$M/drivers/input/tablet" "$M/drivers/gpu/drm/radeon" "$M/fs/ocfs2" "$M/fs/gfs2"
 find "$M/drivers/media" -mindepth 1 -maxdepth 1 ! -name cec ! -name mc -exec rm -rf {} +
-# drop leftovers that depended on a removed subsystem (e.g. a display driver's IR-remote part)
-for _ in 1 2 3 4; do
-  orphans="$(in_chroot depmod -a -e -F "/boot/System.map-$KVER" "$KVER" 2>&1 \
-    | sed -n 's|.*WARNING: \(/lib/modules/[^ ]*\.ko[^ ]*\) needs unknown symbol.*|\1|p' | sort -u)"
-  [ -z "$orphans" ] && break
-  echo "$orphans" | while read -r m; do echo "    removing orphaned module $(basename "$m")"; rm -f "$ROOT$m"; done
-done
+# (Debian ships no real System.map, so unresolved symbols can't be checked here; a few leftover
+# modules that belonged to removed subsystems just never load. The VM test boots the result.)
 in_chroot depmod -a "$KVER"
 # everything Paddock relies on must still load
 for m in i915 xe amdgpu ahci nvme e1000e igb igc r8169 ext4 xfs btrfs ntfs3 exfat vfat raid456 raid1 raid0 raid10 wireguard usb-storage uas squashfs overlay; do
