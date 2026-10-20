@@ -6,7 +6,8 @@
 #   live:  boot "Try Paddock OS" and wait until Paddock answers over HTTPS
 #   full:  + unattended install to a virtual disk, boot it with BIOS and with UEFI, create the first admin,
 #          and build a RAID 1 pool from two blank virtual drives through Manage server → System's API
-set -euo pipefail
+set -Eeuo pipefail
+trap 'echo "smoke.sh: failed at line $LINENO: $BASH_COMMAND (exit $?)" >&2' ERR
 
 ISO="$(realpath "$1")"
 MODE="${2:-full}"

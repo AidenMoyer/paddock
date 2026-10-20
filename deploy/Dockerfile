@@ -35,7 +35,7 @@ RUN set -eux; \
     sed -i 's/^Components: main$/Components: main non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates \
-      libx264-164 libzimg2 libdav1d7 libva2 libva-drm2 libdrm2 mesa-va-drivers; \
+      libx264-164 libzimg2 libdav1d7 libva2 libva-drm2 libdrm2 libgomp1 mesa-va-drivers; \
     if [ "$(dpkg --print-architecture)" = amd64 ]; then \
       apt-get install -y --no-install-recommends libvpl2 libmfx-gen1.2 intel-media-va-driver-non-free; \
     fi; \

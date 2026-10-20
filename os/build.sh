@@ -6,7 +6,8 @@
 # Needs (Debian/Ubuntu host): mmdebstrap debian-archive-keyring squashfs-tools xorriso grub-pc-bin
 #                             grub-efi-amd64-bin grub-common mtools dosfstools zstd
 # Output: os/out/paddock-os[-nvidia]-<version>-amd64.iso (+ .sha256)
-set -euo pipefail
+set -Eeuo pipefail
+trap 'echo "os/build.sh: failed at line $LINENO: $BASH_COMMAND (exit $?)" >&2' ERR
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(dirname "$HERE")"
@@ -90,6 +91,8 @@ mmdebstrap --variant=minbase --keyring="$KEYRING" \
   "deb http://security.debian.org/debian-security $SUITE-security main contrib non-free non-free-firmware"
 
 mount_chroot
+# the image's resolv.conf is a symlink into /run (systemd-resolved); use the build host's DNS meanwhile
+rm -f "$ROOT/etc/resolv.conf"
 cp -L /etc/resolv.conf "$ROOT/etc/resolv.conf"
 printf '#!/bin/sh\nexit 101\n' > "$ROOT/usr/sbin/policy-rc.d"; chmod 0755 "$ROOT/usr/sbin/policy-rc.d"
 KVER="$(ls "$ROOT/lib/modules" | sort -V | tail -n1)"

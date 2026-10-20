@@ -9,7 +9,8 @@
 # Runs on Debian 13 "trixie" (a container or chroot) and produces
 #   out/paddock-ffmpeg-<version>-<rev>-<arch>.tar.zst   → unpacks to /opt/paddock-ffmpeg
 # used by both the container image and Paddock OS.
-set -euo pipefail
+set -Eeuo pipefail
+trap 'echo "ffmpeg/build.sh: failed at line $LINENO: $BASH_COMMAND (exit $?)" >&2' ERR
 
 FFMPEG_VERSION=8.1.3
 FFMPEG_SHA256=7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3
