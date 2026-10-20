@@ -39,6 +39,23 @@ wait_health() {  # port seconds logfile
 xorriso -osirrox on -indev "$ISO" -extract /live/vmlinuz "$W/vmlinuz" -extract /live/initrd.img "$W/initrd.img" >/dev/null 2>&1
 [ -s "$W/vmlinuz" ] || die "kernel not found on the ISO"
 
+iso_menu() {  # name [firmware args] — the ISO itself boots to the Paddock OS menu
+  local name="$1"; shift
+  "${QEMU[@]}" "$@" -cdrom "$ISO" -boot d -nic none >"$W/$name.log" 2>&1 </dev/null &
+  local pid=$! end=$((SECONDS + 90))
+  while [ $SECONDS -lt $end ]; do
+    if grep -aq "Install Paddock OS" "$W/$name.log"; then stop_vm "$pid"; return 0; fi
+    sleep 2
+  done
+  stop_vm "$pid"; return 1
+}
+step "ISO boots to the Paddock OS menu (BIOS and UEFI firmware)"
+iso_menu iso-bios || die "the ISO didn't boot with BIOS firmware"
+cp "$OVMF_VARS" "$W/iso-vars.fd"
+iso_menu iso-uefi -drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE" -drive "if=pflash,format=raw,file=$W/iso-vars.fd" \
+  || die "the ISO didn't boot with UEFI firmware"
+echo "boot menu reached with BIOS and UEFI"
+
 step "live boot"
 "${QEMU[@]}" -kernel "$W/vmlinuz" -initrd "$W/initrd.img" -append "boot=live paddock.live console=ttyS0,115200" \
   -cdrom "$ISO" -nic "user,model=virtio-net-pci,hostfwd=tcp::18443-:443" >"$W/live.log" 2>&1 </dev/null &

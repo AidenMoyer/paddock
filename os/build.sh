@@ -127,17 +127,18 @@ EOF
   apt_install $(grep -v '^\s*#' "$HERE/config/packages-nvidia.txt")
   install -d "$ROOT/lib/modules/$KVER/updates/nvidia"
   cp "$WORK/$VARIANT"/nvidia-mods/* "$ROOT/lib/modules/$KVER/updates/nvidia/"
-  printf 'nvidia\nnvidia-uvm\n' > "$ROOT/etc/modules-load.d/paddock-nvidia.conf"
   printf 'blacklist nouveau\noptions nouveau modeset=0\n' > "$ROOT/etc/modprobe.d/paddock-no-nouveau.conf"
   rm -rf "$ROOT/lib/modules/$KVER/kernel/drivers/gpu/drm/nouveau"
+  # Load the driver only when an NVIDIA GPU is actually present (otherwise it retries for ~80 s at boot).
   cat > "$ROOT/etc/systemd/system/paddock-nvidia.service" <<'EOF'
 [Unit]
-Description=Paddock: create NVIDIA device nodes for transcoding
+Description=Paddock: load the NVIDIA driver and create its device nodes for transcoding
 Before=paddock.service
-After=systemd-modules-load.service
+After=systemd-udevd.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+ExecCondition=/bin/sh -c 'grep -qs 0x10de /sys/bus/pci/devices/*/vendor'
 ExecStart=-/usr/bin/nvidia-modprobe -c 0 -u
 ExecStart=-/usr/bin/nvidia-smi -L
 [Install]
@@ -186,6 +187,7 @@ PROGRAM /usr/bin/logger
 EOF
 : > "$ROOT/etc/fstab"
 install -d "$ROOT/srv/data" "$ROOT/srv/media"
+install -d "$ROOT/etc/network"   # live-boot writes an (unused) ifupdown file here at boot
 in_chroot passwd -l root >/dev/null
 in_chroot systemctl enable systemd-networkd systemd-resolved systemd-timesyncd \
   paddock.service paddock-wg.service paddock-agent.socket paddock-installer.service >/dev/null

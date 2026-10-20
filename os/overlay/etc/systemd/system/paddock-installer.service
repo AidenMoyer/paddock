@@ -8,9 +8,10 @@ ConditionKernelCommandLine=paddock.installer
 [Service]
 Type=idle
 ExecStart=/usr/local/sbin/paddock-installer
+# all three on the screen: menus swap stdout/stderr so whiptail can hand back the answer
 StandardInput=tty
 StandardOutput=tty
-StandardError=journal
+StandardError=tty
 TTYPath=/dev/tty1
 TTYReset=yes
 TTYVHangup=yes

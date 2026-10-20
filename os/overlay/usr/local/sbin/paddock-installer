@@ -17,7 +17,6 @@ LOG=/run/paddock-install.log
 MIN_BYTES=$((16 * 1024 * 1024 * 1024))
 . /etc/paddock-os-release
 AUTO="$(sed -n 's/.*paddock\.autoinstall=\([^ ]*\).*/\1/p' /proc/cmdline)"
-export NEWT_COLORS='root=,black window=,black border=white,black textbox=white,black button=black,white actbutton=white,red title=white,black'
 
 say() {
   echo "[installer] $*" >>"$LOG"
