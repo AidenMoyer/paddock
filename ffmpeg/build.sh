@@ -112,8 +112,10 @@ want=(whisper zscale scale_cuda libx264 h264_nvenc h264_vaapi)
 for f in "${want[@]}"; do
   grep -qw "$f" <<<"$features" || { echo "missing FFmpeg feature: $f" >&2; exit 1; }
 done
-"$PREFIX/bin/ffmpeg" -hide_banner -v error -f lavfi -i testsrc2=d=1 -vf zscale=t=linear,format=gbrpf32le,tonemap=hable,zscale=t=bt709:m=bt709,format=yuv420p \
-  -c:v libx264 -f null -
+# Paddock's HDR → SDR chain (transcode._tonemap) on a test pattern tagged as HDR10 (BT.2020 + PQ)
+"$PREFIX/bin/ffmpeg" -hide_banner -v error -f lavfi -i testsrc2=d=1 -vf "format=yuv420p10le,\
+setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc,zscale=t=linear:npl=100,format=gbrpf32le,\
+zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p" -c:v libx264 -f null -
 echo "    features ok: ${want[*]}, HDR tone-mapping + x264 encode"
 
 tar -C "$(dirname "$PREFIX")" -I 'zstd -19 -T0' -cf "$OUT/$NAME.tar.zst" "$(basename "$PREFIX")"
