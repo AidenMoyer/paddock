@@ -810,6 +810,38 @@ def accounts_menu() -> None:
         reset_password()
 
 
+def updates_menu() -> None:
+    info("Checking GitHub for the latest stable release...")
+    u = agent(A.op_update_check)
+    if not u:
+        return
+    s = u["settings"]
+    head = (f"Installed: Paddock OS {u.get('current')}\n"
+            + (f"Available: {u['latest']}\n" if u.get("available") else "Up to date.\n" if u.get("latest") else "")
+            + (f"Last problem: {u['error']}\n" if u.get("error") else "")
+            + f"Automatic updates: {'on, nightly at ' + s['time'] if s['auto'] else 'off'}")
+    items = ([("install", f"Install {u['latest']} now (restarts the server)")] if u.get("available") and not u.get("running") else [])
+    items += [("auto", "Turn automatic updates " + ("off" if s["auto"] else "on")), ("time", f"Change the time ({s['time']})")]
+    c = menu(head, items)
+    if c == "install" and yesno(f"Download, verify and install Paddock OS {u['latest']}, then restart?\n\n"
+                                "Your data, drives, accounts and settings are kept.", yes="Install", no="Cancel", h=11):
+        if agent(A.op_update_apply):
+            while True:
+                time.sleep(3)
+                st = A.op_update_status({})
+                if st.get("state") == "error":
+                    msg(f"The update stopped: {st.get('error')}", 9)
+                    return
+                info("Downloading... " + f"{st.get('progress') or 0}%" if st.get("state") == "downloading" else
+                     "Installing... the server restarts when it's done.")
+    elif c == "auto":
+        agent(A.op_update_settings, {"auto": not s["auto"], "time": s["time"]})
+    elif c == "time":
+        t = ask("Install updates at (24-hour time, HH:MM):", s["time"])
+        if t:
+            agent(A.op_update_settings, {"auto": s["auto"], "time": t.strip()})
+
+
 def power_menu() -> None:
     c = menu("Power", [("reboot", "Restart the computer"), ("poweroff", "Shut down")])
     if c and yesno("Restart the computer now?" if c == "reboot" else
@@ -838,7 +870,8 @@ def admin_menu() -> None:
         c = menu("Manage this server", [
             ("status", "Server status & health"), ("storage", "Drives & RAID pools"), ("libraries", "Libraries"),
             ("network", "Network"), ("name", "Name & time zone"), ("paddock", "Paddock service & logs"),
-            ("accounts", "Accounts & passwords"), ("power", "Restart or shut down"), ("shell", "Root shell (advanced)"),
+            ("accounts", "Accounts & passwords"), ("updates", "Updates"), ("power", "Restart or shut down"),
+            ("shell", "Root shell (advanced)"),
             ("lock", "Lock the console"),
         ])
         if c is None:
@@ -848,7 +881,7 @@ def admin_menu() -> None:
             session.lock()
             return
         {"status": status_screen, "storage": storage_menu, "libraries": libraries_menu, "network": network_menu,
-         "name": name_time_menu, "paddock": paddock_menu, "accounts": accounts_menu, "power": power_menu,
+         "name": name_time_menu, "paddock": paddock_menu, "accounts": accounts_menu, "updates": updates_menu, "power": power_menu,
          "shell": root_shell}[c]()
         snap.disks_at = 0
 

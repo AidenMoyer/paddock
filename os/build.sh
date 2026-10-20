@@ -237,5 +237,7 @@ touch "$ISO/PADDOCK_OS"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@EDITION@/$([ "$VARIANT" = nvidia ] && echo ' (NVIDIA)')/g" \
   "$HERE/iso/grub.cfg" > "$ISO/boot/grub/grub.cfg"
 grub-mkrescue --locales="" --fonts="" --themes="" -o "$OUT/$NAME.iso" "$ISO" -- -volid PADDOCK_OS >/dev/null 2>&1
-( cd "$OUT" && sha256sum "$NAME.iso" > "$NAME.iso.sha256" )
+# the same system image, for updating installed servers (paddock-update)
+cp "$ISO/live/filesystem.squashfs" "$OUT/$NAME.squashfs"
+( cd "$OUT" && sha256sum "$NAME.iso" > "$NAME.iso.sha256" && sha256sum "$NAME.squashfs" > "$NAME.squashfs.sha256" )
 log "done: $OUT/$NAME.iso ($(du -h "$OUT/$NAME.iso" | cut -f1))"

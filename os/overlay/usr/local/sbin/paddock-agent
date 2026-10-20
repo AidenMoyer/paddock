@@ -562,7 +562,56 @@ def op_logs(a: dict) -> dict:
     return {"unit": unit, "text": run(["journalctl", *sel, "-n", str(lines), "--no-pager", "-o", "short-iso"], check=False)}
 
 
+UPDATER = ["/usr/bin/python3", "/usr/local/sbin/paddock-update"]
+
+
+def _update_status() -> dict:
+    try:
+        s = json.loads(Path("/srv/data/update/status.json").read_text())
+    except (OSError, ValueError):
+        s = {}
+    c = {"auto": False, "time": "03:30"}
+    try:
+        c.update(json.loads(Path("/etc/paddock/update.conf").read_text()))
+    except (OSError, ValueError):
+        pass
+    running = run(["systemctl", "is-active", "paddock-update-run"], check=False).strip() == "active"
+    return s | {"settings": c, "running": running, "current": _kv("/etc/paddock-os-release").get("PADDOCK_OS_VERSION")}
+
+
+def op_update_status(_: dict) -> dict:
+    return _update_status()
+
+
+def op_update_check(_: dict) -> dict:
+    run(UPDATER + ["check"], timeout=60, check=False)
+    return _update_status()
+
+
+def op_update_apply(_: dict) -> dict:
+    if _update_status()["running"]:
+        raise Refused("An update is already running")
+    run(["systemd-run", "--quiet", "--collect", "--unit=paddock-update-run", *UPDATER, "apply", "--reboot"])
+    return {"started": True}
+
+
+def op_update_settings(a: dict) -> dict:
+    t = str(a.get("time", "03:30"))
+    if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", t):
+        raise Refused("Time must look like 03:30")
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader("paddock_update", "/usr/local/sbin/paddock-update")
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("paddock_update", loader))
+    loader.exec_module(mod)
+    mod.save_conf({"auto": bool(a.get("auto")), "time": t})
+    return _update_status()
+
+
 OPS = {
+    "update_status": op_update_status, "update_check": op_update_check, "update_apply": op_update_apply,
+    "update_settings": op_update_settings,
     "info": op_info, "disks": op_disks, "mount": op_mount, "unmount": op_unmount, "format": op_format,
     "pool_create": op_pool_create, "pool_add": op_pool_add, "pool_expand": op_pool_expand,
     "pool_remove_disk": op_pool_remove_disk, "pool_check": op_pool_check, "pool_destroy": op_pool_destroy,

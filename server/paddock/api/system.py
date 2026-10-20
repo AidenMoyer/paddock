@@ -160,6 +160,31 @@ def power(body: PowerBody, actor: Actor = Depends(require_admin)):
     return agent(actor, "power", action=body.action)
 
 
+class UpdateSettingsBody(BaseModel):
+    auto: bool
+    time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+@router.get("/updates")
+def updates(actor: Actor = Depends(require_admin)):
+    return agent(actor, "update_status", audit=False)
+
+
+@router.post("/updates/check")
+def updates_check(actor: Actor = Depends(require_admin)):
+    return agent(actor, "update_check", audit=False, timeout=90)
+
+
+@router.post("/updates/install")
+def updates_install(actor: Actor = Depends(require_admin)):
+    return agent(actor, "update_apply")
+
+
+@router.put("/updates/settings")
+def updates_settings(body: UpdateSettingsBody, actor: Actor = Depends(require_admin)):
+    return agent(actor, "update_settings", auto=body.auto, time=body.time)
+
+
 @router.get("/logs")
 def logs(unit: str = "paddock", lines: int = 300, actor: Actor = Depends(require_admin)):
     return agent(actor, "logs", audit=False, unit=unit, lines=lines)

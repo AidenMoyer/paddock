@@ -191,7 +191,7 @@ jobs:
         run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           mkdir dist
-          cp artifacts/iso-standard/*.iso artifacts/iso-nvidia/*.iso artifacts/apk/*.apk dist/
+          cp artifacts/iso-standard/*.iso artifacts/iso-nvidia/*.iso artifacts/iso-standard/*.squashfs artifacts/iso-nvidia/*.squashfs artifacts/apk/*.apk dist/
           sed -e "s|ghcr.io/aidenmoyer/paddock:latest|ghcr.io/$owner/paddock:$VERSION|" \
               -e "s|ghcr.io/aidenmoyer/paddock-wg:latest|ghcr.io/$owner/paddock-wg:$VERSION|" \
               deploy/compose.yaml > "dist/paddock-truenas-$VERSION.yaml"

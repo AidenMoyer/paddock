@@ -1,0 +1,198 @@
+#!/usr/bin/python3
+"""paddock-update — install the latest stable Paddock OS release.
+
+    paddock-update check            look for a newer stable release (writes status)
+    paddock-update apply [--reboot] download, verify (SHA-256 from the release), install, update the boot loader
+    paddock-update auto             what the nightly timer runs: apply + reboot if automatic updates are on
+
+The new system image replaces the system files in place; everything that belongs to this server is kept:
+Paddock's data (/srv/data), media drives and pools, network, name, time zone, console password, settings.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+REPO = "AidenMoyer/paddock"
+WORK = Path("/srv/data/update")
+STATUS = WORK / "status.json"
+CONF = Path("/etc/paddock/update.conf")
+MNT = Path("/run/paddock-update/new")
+# per-machine files the update must never overwrite
+KEEP = ["/etc/fstab", "/etc/hostname", "/etc/hosts", "/etc/machine-id", "/etc/paddock/", "/etc/systemd/network/",
+        "/etc/mdadm/mdadm.conf", "/etc/localtime", "/etc/timezone", "/etc/shadow", "/etc/shadow-",
+        "/etc/systemd/system/paddock-update.timer.d/", "/etc/systemd/system/timers.target.wants/paddock-update.timer",
+        "/var/lib/systemd/", "/var/log/", "/boot/grub/grub.cfg"]
+SKIP = ["/srv/", "/proc/", "/sys/", "/dev/", "/run/", "/tmp/", "/mnt/", "/boot/efi/", "/var/tmp/", "/lost+found/"]
+
+
+def release_info() -> dict:
+    out = {}
+    try:
+        for line in Path("/etc/paddock-os-release").read_text().splitlines():
+            k, _, v = line.partition("=")
+            out[k] = v
+    except OSError:
+        pass
+    return out
+
+
+def conf() -> dict:
+    c = {"auto": False, "time": "03:30"}
+    try:
+        c.update(json.loads(CONF.read_text()))
+    except (OSError, ValueError):
+        pass
+    return c
+
+
+def save_conf(c: dict) -> None:
+    CONF.write_text(json.dumps(c))
+    hh, mm = c["time"].split(":")
+    Path("/etc/systemd/system/paddock-update.timer.d").mkdir(parents=True, exist_ok=True)
+    Path("/etc/systemd/system/paddock-update.timer.d/time.conf").write_text(
+        f"[Timer]\nOnCalendar=\nOnCalendar=*-*-* {int(hh):02d}:{int(mm):02d}:00\n")
+    subprocess.run(["systemctl", "daemon-reload"], check=False)
+    subprocess.run(["systemctl", "enable" if c["auto"] else "disable", "--now", "paddock-update.timer"],
+                   capture_output=True, check=False)
+
+
+def status(**update) -> dict:
+    WORK.mkdir(parents=True, exist_ok=True)
+    try:
+        s = json.loads(STATUS.read_text())
+    except (OSError, ValueError):
+        s = {}
+    s.update(update)
+    tmp = STATUS.with_suffix(".tmp")
+    tmp.write_text(json.dumps(s))
+    tmp.replace(STATUS)
+    return s
+
+
+def vtuple(v: str) -> tuple:
+    return tuple(int(x) for x in re.findall(r"\d+", v.split("-")[0])[:3])
+
+
+def get(url: str, timeout: int = 30):
+    req = urllib.request.Request(url, headers={"User-Agent": "paddock-update", "Accept": "application/vnd.github+json"})
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def check() -> dict:
+    rel = release_info()
+    current = rel.get("PADDOCK_OS_VERSION", "0")
+    variant = rel.get("PADDOCK_OS_VARIANT", "standard")
+    try:
+        with get(f"https://api.github.com/repos/{REPO}/releases/latest") as r:
+            latest = json.loads(r.read())
+    except Exception as e:  # noqa: BLE001
+        return status(state="error", error=f"Couldn't reach GitHub: {e}", checked=time.time(), current=current)
+    version = latest["tag_name"].lstrip("v")
+    name = f"paddock-os{'-nvidia' if variant == 'nvidia' else ''}-{version}-amd64.squashfs"
+    assets = {a["name"]: a for a in latest.get("assets", [])}
+    available = vtuple(version) > vtuple(current) and name in assets and "SHA256SUMS" in assets
+    return status(state="idle", error=None, checked=time.time(), current=current, latest=version,
+                  available=available, notes_url=latest.get("html_url"), asset=name if available else None,
+                  size=assets[name]["size"] if name in assets else None)
+
+
+def run(*cmd):
+    subprocess.run(cmd, check=True, capture_output=True)
+
+
+def apply(reboot: bool) -> None:
+    s = check()
+    if not s.get("available"):
+        status(state="idle")
+        print("already up to date")
+        return
+    version, name = s["latest"], s["asset"]
+    base = f"https://github.com/{REPO}/releases/download/v{version}"
+    try:
+        status(state="downloading", progress=0, error=None)
+        with get(f"{base}/SHA256SUMS") as r:
+            sums = dict(reversed(line.split()) for line in r.read().decode().splitlines() if line.strip())
+        want = sums.get(name)
+        if not want:
+            raise RuntimeError("the release has no checksum for this image")
+        if shutil.disk_usage(WORK).free < (s.get("size") or 0) * 1.2:
+            raise RuntimeError("not enough free space on the data partition for the download")
+        img = WORK / name
+        h, done = hashlib.sha256(), 0
+        with get(f"{base}/{name}", timeout=120) as r, open(img, "wb") as f:
+            while chunk := r.read(1 << 20):
+                f.write(chunk)
+                h.update(chunk)
+                done += len(chunk)
+                if s.get("size"):
+                    status(progress=round(100 * done / s["size"]))
+        if h.hexdigest() != want:
+            img.unlink(missing_ok=True)
+            raise RuntimeError("the download didn't match the published checksum, so it was discarded")
+
+        status(state="installing", progress=None)
+        MNT.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["umount", str(MNT)], capture_output=True)
+        run("mount", "-t", "squashfs", "-o", "loop,ro", str(img), str(MNT))
+        try:
+            excludes = [f"--exclude={p}" for p in KEEP + SKIP]
+            run("rsync", "-aHAX", "--delete", *excludes, f"{MNT}/", "/")
+        finally:
+            subprocess.run(["umount", str(MNT)], capture_output=True)
+        refresh_bootloader()
+        img.unlink(missing_ok=True)
+        status(state="installed", installed=version, installed_at=time.time(), available=False)
+    except Exception as e:  # noqa: BLE001
+        status(state="error", error=str(e))
+        raise
+    if reboot:
+        subprocess.run(["systemctl", "reboot"])
+
+
+def refresh_bootloader() -> None:
+    """Point GRUB at the new kernel (keeping this machine's root UUID and console options)."""
+    cfg = Path("/boot/grub/grub.cfg")
+    kver = sorted(os.listdir("/lib/modules"), key=vtuple)[-1]
+    text = cfg.read_text()
+    text = re.sub(r"vmlinuz-[^ \n]+", f"vmlinuz-{kver}", text)
+    text = re.sub(r"initrd\.img-[^ \n]+", f"initrd.img-{kver}", text)
+    version = release_info().get("PADDOCK_OS_VERSION", "")
+    text = re.sub(r'"Paddock OS [^"(]*', f'"Paddock OS {version} ', text).replace(f"{version}  (", f"{version} (")
+    cfg.write_text(text)
+    root = subprocess.run(["findmnt", "-no", "SOURCE", "/"], capture_output=True, text=True).stdout.strip()
+    disk = subprocess.run(["lsblk", "-no", "PKNAME", root], capture_output=True, text=True).stdout.strip()
+    if disk:
+        subprocess.run(["grub-install", "--target=i386-pc", "--boot-directory=/boot", f"/dev/{disk}"], capture_output=True)
+    if Path("/boot/efi/EFI").exists():
+        subprocess.run(["grub-install", "--target=x86_64-efi", "--efi-directory=/boot/efi", "--boot-directory=/boot",
+                        "--removable", "--no-nvram"], capture_output=True)
+
+
+def main() -> None:
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "check"
+    if "boot=live" in Path("/proc/cmdline").read_text():
+        status(state="error", error="Running from the USB stick: install Paddock OS to update it")
+        return
+    if cmd == "check":
+        print(json.dumps(check()))
+    elif cmd == "apply":
+        apply(reboot="--reboot" in sys.argv)
+    elif cmd == "auto":
+        if conf()["auto"]:
+            apply(reboot=True)
+        else:
+            check()
+
+
+if __name__ == "__main__":
+    main()

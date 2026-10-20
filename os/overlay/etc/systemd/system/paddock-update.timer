@@ -1,0 +1,10 @@
+[Unit]
+Description=Paddock OS: nightly update check (on when automatic updates are turned on)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=20m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

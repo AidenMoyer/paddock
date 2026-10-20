@@ -1,0 +1,9 @@
+[Unit]
+Description=Paddock OS: install the latest stable release (when automatic updates are on)
+After=network-online.target
+Wants=network-online.target
+ConditionKernelCommandLine=!boot=live
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/paddock-update auto

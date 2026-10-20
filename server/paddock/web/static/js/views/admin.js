@@ -251,6 +251,9 @@ async function systemPage(c) {
   c.append(panel("Drives & pools", "Combine drives into a pool for more space and to survive a drive failing. Pools and single drives appear under /srv/media, ready to add as libraries.", storage));
   c.append(panel("Network", null, net));
   c.append(namePanel(i, ov.timezones || []));
+  const upd = h("div", null, loader());
+  c.append(panel("Updates", "Paddock OS installs the latest stable release from GitHub. Your data, drives, accounts and settings are kept; the server restarts once.", upd));
+  drawUpdates(upd);
   c.append(powerPanel());
   c.append(logsPanel());
   drawStorage(storage);
@@ -449,6 +452,34 @@ async function drawNetwork(box) {
         else drawNetwork(box);
       }, 6000);
     } }, "Apply"));
+}
+
+async function drawUpdates(box) {
+  let u;
+  try { u = await api.get("/api/admin/system/updates"); } catch (e) { box.replaceChildren(h("p", { class: "muted" }, e.message)); return; }
+  const redraw = () => { if (box.isConnected) drawUpdates(box); };
+  let auto = !!u.settings.auto;
+  const time = h("input", { class: "input", type: "time", value: u.settings.time, style: { maxWidth: "140px" } });
+  const busy = u.running || ["downloading", "installing"].includes(u.state);
+  const stateLine = busy ? h("div", { class: "callout warn" }, icon("refresh"), h("div", { class: "small" },
+      u.state === "downloading" ? `Downloading ${u.latest} · ${u.progress ?? 0}%` : `Installing ${u.latest || ""}. The server restarts when it's done.`))
+    : u.state === "error" ? h("div", { class: "callout bad" }, icon("warning"), h("div", { class: "small" }, u.error))
+    : u.available ? h("div", { class: "callout ok" }, icon("download"), h("div", { class: "small" },
+      `Paddock OS ${u.latest} is available (you have ${u.current}). `, u.notes_url ? h("a", { href: u.notes_url, target: "_blank", rel: "noopener" }, "What's new") : null))
+    : h("p", { class: "muted small" }, u.checked ? `Up to date (${u.current}). Last checked ${timeAgo(u.checked * 1000)}.` : `Version ${u.current}. Not checked yet.`);
+  box.replaceChildren(stateLine,
+    h("div", { class: "row wrap", style: { margin: "12px 0" } },
+      h("button", { class: "btn", disabled: busy, onclick: async (e) => { e.target.disabled = true; await api.post("/api/admin/system/updates/check"); redraw(); } }, icon("refresh", "sm"), "Check now"),
+      u.available && !busy ? h("button", { class: "btn accent", onclick: async () => {
+        if (!(await confirmDialog(`Install Paddock OS ${u.latest}?`, "It downloads, verifies and installs the update, then restarts the server (a few minutes). Playback stops meanwhile.", { ok: "Install & restart" }))) return;
+        await api.post("/api/admin/system/updates/install"); toast("Updating…"); redraw();
+      } }, icon("download", "sm"), `Install ${u.latest}`) : null),
+    switchEl("Install updates automatically", auto, (v) => { auto = v; }, "Checks every night and installs new stable releases, then restarts."),
+    h("div", { class: "row", style: { marginTop: "8px" } }, field("At", time),
+      h("button", { class: "btn", style: { alignSelf: "flex-end" }, onclick: async () => {
+        await api.put("/api/admin/system/updates/settings", { auto, time: time.value || "03:30" }); toast("Update settings saved");
+      } }, "Save")));
+  if (busy) setTimeout(redraw, 4000);
 }
 
 function namePanel(i, zones) {
