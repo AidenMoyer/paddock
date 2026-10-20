@@ -33,8 +33,10 @@ jobs:
           shellcheck -S error ffmpeg/build.sh os/build.sh os/test/smoke.sh deploy/wireguard/paddock-wg.sh \
             os/overlay/usr/local/sbin/paddock-installer os/overlay/usr/local/sbin/paddock-mount \
             os/overlay/usr/local/sbin/paddock-prepare
-      - name: system agent compiles
-        run: python3 -m py_compile os/overlay/usr/local/sbin/paddock-agent
+      - name: system agent and console compile
+        run: |
+          python3 -m py_compile os/overlay/usr/local/sbin/paddock-agent
+          python3 -m py_compile os/overlay/usr/local/lib/paddock-console/console.py
 
   android:
     name: Android app builds

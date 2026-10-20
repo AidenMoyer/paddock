@@ -1,0 +1,22 @@
+[Unit]
+Description=Paddock OS console (dashboard and admin menu on the server's own screen)
+After=systemd-user-sessions.service
+Conflicts=getty@tty1.service
+Before=getty@tty1.service
+ConditionKernelCommandLine=!paddock.installer
+
+[Service]
+ExecStart=/opt/paddock/venv/bin/python /usr/local/lib/paddock-console/console.py
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+Environment=TERM=linux LANG=C.UTF-8
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

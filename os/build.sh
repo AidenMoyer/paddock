@@ -190,7 +190,10 @@ install -d "$ROOT/srv/data" "$ROOT/srv/media"
 install -d "$ROOT/etc/network"   # live-boot writes an (unused) ifupdown file here at boot
 in_chroot passwd -l root >/dev/null
 in_chroot systemctl enable systemd-networkd systemd-resolved systemd-timesyncd \
-  paddock.service paddock-wg.service paddock-agent.socket paddock-installer.service >/dev/null
+  paddock.service paddock-wg.service paddock-agent.socket paddock-installer.service paddock-console.service >/dev/null
+# tty1 belongs to the Paddock OS console (and to the installer on the ISO); logins stay on tty2-tty6
+in_chroot systemctl mask getty@tty1.service >/dev/null
+in_chroot /opt/paddock/venv/bin/python -m py_compile /usr/local/lib/paddock-console/console.py
 in_chroot systemctl disable smartmontools.service smartd.service >/dev/null 2>&1 || true
 [ "$VARIANT" = nvidia ] && in_chroot systemctl enable paddock-nvidia.service >/dev/null
 in_chroot systemctl mask apt-daily.timer apt-daily-upgrade.timer e2scrub_all.timer >/dev/null 2>&1 || true

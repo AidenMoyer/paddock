@@ -233,7 +233,8 @@ ADDR_NOTE="https://$HOST.local"
 whiptail --title "$TITLE" --msgbox \
 "Paddock OS is installed.\n
 Remove the USB stick, then press Enter to restart.\n
-After it starts, open $ADDR_NOTE (or the address shown on this screen)
-from a browser on your network and create your admin account." 14 76
+After it starts, this screen shows the Paddock OS console: press S there to
+create your admin account right here, or open $ADDR_NOTE (or the address it
+shows) from a browser on your network." 15 78
 systemctl reboot
 sleep 30

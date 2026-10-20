@@ -520,7 +520,7 @@ def op_info(_: dict) -> dict:
         mem[k] = int(v.split()[0]) * 1024
     cpu = re.search(r"^model name\s*:\s*(.+)$", Path("/proc/cpuinfo").read_text(), re.M)
     units = {}
-    for u in ("paddock", "paddock-wg", "systemd-networkd", "systemd-timesyncd"):
+    for u in ("paddock", "paddock-wg", "paddock-console", "systemd-networkd", "systemd-timesyncd"):
         units[u] = run(["systemctl", "is-active", u], check=False).strip()
     tz = Path("/etc/timezone").read_text().strip() if Path("/etc/timezone").exists() else "UTC"
     return {
