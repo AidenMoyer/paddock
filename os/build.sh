@@ -37,7 +37,7 @@ done
 if [ -z "$FFMPEG_TAR" ]; then FFMPEG_TAR="$(ls -1 "$REPO"/ffmpeg/out/paddock-ffmpeg-*-amd64.tar.zst 2>/dev/null | sort -V | tail -n1 || true)"; fi
 [ -f "$FFMPEG_TAR" ] || { echo "no Paddock FFmpeg build found; run ffmpeg/build.sh first or pass --ffmpeg" >&2; exit 1; }
 
-NAME="paddock-os$([ "$VARIANT" = nvidia ] && echo -nvidia)-$VERSION-amd64"
+if [ "$VARIANT" = nvidia ]; then NAME="paddock-os-nvidia-$VERSION-amd64"; else NAME="paddock-os-$VERSION-amd64"; fi
 ROOT="$WORK/$VARIANT/rootfs"
 ISO="$WORK/$VARIANT/iso"
 KEYRING=/usr/share/keyrings/debian-archive-keyring.pgp
