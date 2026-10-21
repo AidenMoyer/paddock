@@ -18,6 +18,7 @@ const ROUTES = [
   [/^\/projects$/, "projects"],
   [/^\/project\/(\d+)$/, "projects"],
   [/^\/assistant$/, "assistant"],
+  [/^\/together$/, "together"],
   [/^\/upload$/, "upload"],
   [/^\/account$/, "account"],
   [/^\/trash$/, "account"],
@@ -108,16 +109,18 @@ function logoMark() {
 
 const NAV = [
   { path: "/", icon: "home", label: "Home" },
+  { path: "/together", icon: "users", label: "Together" },
+  "-",
   { path: "/movies", icon: "movie", label: "Movies", kind: "movies" },
   { path: "/shows", icon: "tv", label: "TV Shows", kind: "shows" },
   { path: "/music", icon: "music", label: "Music", kind: "music" },
   { path: "/photos", icon: "photo", label: "Photos", kind: "photos" },
   { path: "/videos", icon: "videocam", label: "Home Videos", kind: "home_videos" },
-  { path: "/red", icon: "camera", label: "Footage", kind: "red" },
-  { path: "/engineering", icon: "build", label: "Engineering", kind: "engineering" },
+  { path: "/red", icon: "camera", label: "Footage", kind: "red", full_app: true },
+  { path: "/engineering", icon: "build", label: "Engineering", kind: "engineering", full_app: true },
   "-",
-  { path: "/projects", icon: "work", label: "Projects" },
-  { path: "/assistant", icon: "sparkle", label: "Assistant" },
+  { path: "/projects", icon: "work", label: "Projects", full_app: true },
+  { path: "/assistant", icon: "sparkle", label: "Assistant", full_app: true },
   { path: "/favorites", icon: "heart", label: "Favorites", full: true },
   { path: "/collections", icon: "queue", label: "Collections", full: true },
   "-",
@@ -132,6 +135,7 @@ function shell() {
   for (const n of NAV) {
     if (n === "-") { side.append(h("hr")); continue; }
     if (n.admin && !ctx.user.is_admin) continue;
+    if (n.full_app && ctx.user.media_only) continue;
     if (n.kind && !kinds.has(n.kind) && !(n.kind === "home_videos" && kinds.has("mixed"))) continue;
     side.append(h("a", { href: n.path, "data-nav": n.path, class: n.full ? "full-only" : "" }, icon(n.icon), h("span", { class: "label" }, n.label)));
   }
@@ -190,20 +194,23 @@ function shell() {
     h("div", { class: "right" },
       iconBtn("search", "Search", () => { document.body.classList.add("searching"); searchInput.focus(); }, { class: "show-mobile" }),
       jobsBtn,
-      iconBtn("upload", "Upload", () => navigate("/upload"), { class: "hide-mobile" }),
-      iconBtn("sparkle", "Assistant", () => navigate("/assistant")),
+      ctx.user.media_only ? null : iconBtn("upload", "Upload", () => navigate("/upload"), { class: "hide-mobile" }),
+      ctx.user.media_only ? null : iconBtn("sparkle", "Assistant", () => navigate("/assistant")),
       avatar));
 
   const bottom = h("nav", { class: "bottomnav", "aria-label": "Quick" },
     h("a", { href: "/", "data-nav": "/" }, icon("home"), "Home"),
     h("a", { href: "/photos", "data-nav": "/photos" }, icon("photo"), "Photos"),
-    h("a", { href: "/upload", class: "add", "aria-label": "Upload" }, icon("addCircle")),
-    h("a", { href: "/projects", "data-nav": "/projects" }, icon("work"), "Projects"),
+    ctx.user.media_only ? null : h("a", { href: "/upload", class: "add", "aria-label": "Upload" }, icon("addCircle")),
+    h("a", { href: "/together", "data-nav": "/together" }, icon("users"), "Together"),
+    ctx.user.media_only ? h("a", { href: "/music", "data-nav": "/music" }, icon("music"), "Music")
+      : h("a", { href: "/projects", "data-nav": "/projects" }, icon("work"), "Projects"),
     h("a", { href: "/account", "data-nav": "/account" }, icon("user"), "You"));
 
   main = h("main", { class: "content", id: "main" });
   clear(app).append(top, side, main, bottom);
   pollJobs(jobsBtn);
+  import("./live.js").then((m) => m.startLive());
 }
 
 function toggleDrawer() {
@@ -246,9 +253,25 @@ function toggleTheme() {
 }
 
 async function signOut() {
+  await import("./live.js").then((m) => m.stopLive()).catch(() => {});
   await api.post("/api/auth/logout").catch(() => {});
   ctx.user = null;
   boot();
+}
+
+/** Tabs to jump between kinds of media (videos, photos, music...) at the top of browsing pages. */
+export function mediaTabs() {
+  const kinds = new Set(ctx.libraries.map((l) => l.kind));
+  const p = location.pathname;
+  const tabs = [
+    ["/", "All", true], ["/movies", "Movies", kinds.has("movies")], ["/shows", "Shows", kinds.has("shows")],
+    ["/videos", "Home videos", kinds.has("home_videos") || kinds.has("mixed")], ["/photos", "Photos", kinds.has("photos")],
+    ["/music", "Music", kinds.has("music")], ["/red", "Footage", kinds.has("red") && !ctx.user.media_only],
+    ["/engineering", "Engineering", kinds.has("engineering") && !ctx.user.media_only],
+    ["/projects", "Projects", !ctx.user.media_only], ["/together", "Together", true],
+  ];
+  return h("nav", { class: "media-tabs", "aria-label": "Browse by kind" },
+    ...tabs.filter((t) => t[2]).map(([href, label]) => h("a", { href, class: (href === "/" ? p === "/" : p.startsWith(href)) ? "active" : "" }, label)));
 }
 
 export function itemHref(it) {

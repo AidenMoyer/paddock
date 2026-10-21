@@ -1,7 +1,8 @@
 // Photos: day-grouped timeline, places, memories, and a full-screen lightbox.
 
 import { api, qs, thumbUrl } from "../api.js";
-import { ctx, navigate, setTitle } from "../app.js";
+import { commentsPanel } from "../comments.js";
+import { ctx, mediaTabs, navigate, setTitle } from "../app.js";
 import { addToProjectDialog, bulkActions, enableSelection } from "../cards.js";
 import { h, icon, iconBtn, clear, emptyState, fmtDateTime, fmtDuration, toast, fmtBytes, loader } from "../ui.js";
 
@@ -13,7 +14,7 @@ export async function render(root, { query }) {
   setTitle("Photos");
   const tab = query.get("tab") || "timeline";
   const body = h("div");
-  root.append(h("div", { class: "page-head" }, h("h1", null, "Photos"),
+  root.append(mediaTabs(), h("div", { class: "page-head" }, h("h1", null, "Photos"),
     h("div", { class: "actions" }, h("a", { class: "btn", href: "/upload" }, icon("upload"), "Upload"))),
     h("div", { class: "chips" }, ...[["timeline", "Timeline"], ["memories", "On this day"], ["places", "Places"], ["favorites", "Favorites"], ["screens", "Screenshots"]]
       .map(([t, l]) => h("a", { class: `chip ${t === tab ? "active" : ""}`, href: `/photos?tab=${t}` }, l))), body);
@@ -103,7 +104,8 @@ export function lightbox(items, start) {
   const stage = h("div", { class: "stage" });
   const aside = h("aside", { hidden: !info });
   const counter = h("span", { class: "muted", style: { color: "#ccc", alignSelf: "center", marginLeft: "8px" } });
-  const close = () => { box.remove(); document.removeEventListener("keydown", onKey); };
+  let comments = null;
+  const close = () => { comments?.destroy(); box.remove(); document.removeEventListener("keydown", onKey); };
   const favBtn = iconBtn("heartOutline", "Favorite", async () => {
     const it = items[i];
     const r = await api.patch(`/api/items/${it.id}`, { favorite: !it.favorite });
@@ -134,15 +136,42 @@ export function lightbox(items, start) {
     else if (e.key === "i") { info = !info; aside.hidden = !info; if (info) drawInfo(); }
   };
   document.addEventListener("keydown", onKey);
-  // swipe
-  let sx = null;
-  stage.addEventListener("touchstart", (e) => { sx = e.touches[0].clientX; }, { passive: true });
+  // swipe: the photo follows your finger, and lets go to the next one past a third of the way (or a quick flick)
+  let sx = null, st = 0;
+  const media = () => stage.firstElementChild;
+  stage.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) { sx = null; return; }
+    sx = e.touches[0].clientX; st = performance.now();
+    if (media()) media().style.transition = "none";
+  }, { passive: true });
+  stage.addEventListener("touchmove", (e) => {
+    if (sx === null || !media()) return;
+    let dx = e.touches[0].clientX - sx;
+    if ((dx > 0 && i === 0) || (dx < 0 && i === items.length - 1)) dx /= 3;     // resist at the ends
+    media().style.transform = `translateX(${dx}px)`;
+  }, { passive: true });
   stage.addEventListener("touchend", (e) => {
     if (sx === null) return;
     const dx = e.changedTouches[0].clientX - sx;
-    if (Math.abs(dx) > 60) show(i + (dx < 0 ? 1 : -1));
+    const fast = Math.abs(dx) > 40 && performance.now() - st < 250;
+    const el = media();
     sx = null;
+    const dir = dx < 0 ? 1 : -1;
+    if ((Math.abs(dx) > innerWidth / 3 || fast) && items[i + dir]) {
+      if (el) { el.style.transition = "transform var(--dur-fast) var(--ease-accelerate)"; el.style.transform = `translateX(${-dir * innerWidth}px)`; }
+      setTimeout(() => show(i + dir, -dir), 120);
+    } else if (el) { el.style.transition = "transform var(--dur-base) var(--ease-standard)"; el.style.transform = ""; }
   });
+  // desktop: the mouse wheel or a trackpad swipe moves between photos
+  let wheelAt = 0, wheelSum = 0;
+  stage.addEventListener("wheel", (e) => {
+    if (e.ctrlKey || stage.querySelector("video")) return;      // pinch-zoom / video scrubbing
+    e.preventDefault();
+    wheelSum += Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    const now = performance.now();
+    if (Math.abs(wheelSum) > 60 && now - wheelAt > 280) { wheelAt = now; show(i + (wheelSum > 0 ? 1 : -1), wheelSum > 0 ? -1 : 1); wheelSum = 0; }
+    clearTimeout(stage.wheelReset); stage.wheelReset = setTimeout(() => { wheelSum = 0; }, 200);
+  }, { passive: false });
   async function drawInfo() {
     const it = items[i];
     aside.replaceChildren(loader());
@@ -158,8 +187,11 @@ export function lightbox(items, start) {
       h("div", { class: "tags", style: { marginTop: "16px" } }, ...(d.tags || []).map((t) => h("a", { class: "tag", href: `/search?tag=${encodeURIComponent(t)}`, onclick: close }, `#${t}`))),
       d.projects?.length ? h("div", { style: { marginTop: "16px" } }, h("div", { class: "muted small" }, "Projects"),
         ...d.projects.map((p) => h("a", { class: "pill", href: `/project/${p.id}`, onclick: close }, p.name))) : null);
+    comments?.destroy();
+    comments = commentsPanel(it.id);
+    aside.append(comments.el);
   }
-  function show(n) {
+  function show(n, from = 0) {
     if (n < 0 || n >= items.length) return;
     i = n;
     const it = items[i];
@@ -175,13 +207,17 @@ export function lightbox(items, start) {
       });
       stage.replaceChildren(v);
     } else {
-      const img = h("img", { src: thumbUrl(it.id), alt: it.title });
+      const img = h("img", { src: thumbUrl(it.id), alt: it.title, draggable: false });
+      if (from) {     // slide in from the side we're moving towards
+        img.style.transform = `translateX(${from * 40}px)`; img.style.opacity = "0";
+        requestAnimationFrame(() => { img.style.transition = "transform var(--dur-base) var(--ease-decelerate), opacity var(--dur-base)"; img.style.transform = ""; img.style.opacity = ""; });
+      }
       stage.replaceChildren(img);
       const full = new Image();
       full.onload = () => { if (items[i] === it) img.src = full.src; };
       full.src = `/api/items/${it.id}/preview`;
       // preload neighbours
-      for (const k of [i - 1, i + 1]) if (items[k]?.kind === "photo") new Image().src = `/api/items/${items[k].id}/preview`;
+      for (const k of [i - 1, i + 1, i + 2]) if (items[k]?.kind === "photo") new Image().src = `/api/items/${items[k].id}/preview`;
     }
     if (info) drawInfo();
   }

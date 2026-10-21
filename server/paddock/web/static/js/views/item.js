@@ -4,6 +4,7 @@ import { api, thumbUrl } from "../api.js";
 import { ctx, navigate, setTitle, itemHref } from "../app.js";
 import { addToProjectDialog, itemCard } from "../cards.js";
 import { lightbox } from "./photos.js";
+import { commentsPanel } from "../comments.js";
 import { gcodeView, viewer3d } from "../viewer3d.js";
 import { h, icon, fmtBytes, fmtDateTime, timeAgo, toast, modal, field, copyText, promptDialog } from "../ui.js";
 
@@ -82,6 +83,8 @@ export async function render(root, { match }) {
     item.tags?.length ? h("div", { class: "tags", style: { marginTop: "12px" } }, ...item.tags.map((t) => h("a", { class: "tag", href: `/search?tag=${encodeURIComponent(t)}` }, `#${t}`))) : null,
     item.projects?.length ? h("div", { class: "row wrap", style: { marginTop: "12px" } }, h("span", { class: "muted small" }, "Projects:"),
       ...item.projects.map((p) => h("a", { class: "pill", href: `/project/${p.id}` }, p.name))) : null));
+  const comments = commentsPanel(id);
+  left.append(comments.el);
 
   // ---- related (revisions / exports / same day)
   const related = (item.related || []).filter((r) => r.id !== id);
@@ -91,6 +94,7 @@ export async function render(root, { match }) {
     for (const r of related.slice(0, 30)) list.append(itemCard(r, { badge: false }));
     right.append(list);
   }
+  return { destroy: () => comments.destroy() };
 }
 
 function printDialog(id, printers) {

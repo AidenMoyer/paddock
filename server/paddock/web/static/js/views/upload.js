@@ -29,13 +29,18 @@ async function pump() {
       next.state = r.duplicate ? "Already in Paddock" : "Done";
       next.progress = 1;
     } catch (e) {
-      next.state = `Failed: ${e.message}`;
+      next.state = `Didn't upload: ${e.message}`;
+      next.failed = true;
     }
     drawRow(next);
   }
   running = false;
   const done = queue.filter((r) => r.state === "Done").length;
+  const failed = queue.filter((r) => r.failed && !r.reported);
+  failed.forEach((r) => { r.reported = true; });
   if (done) toast(`${done} file${done > 1 ? "s" : ""} uploaded`);
+  if (failed.length) toast(failed.length === 1 ? `${failed[0].file.name} didn't upload: ${failed[0].state.replace("Didn't upload: ", "")}`
+    : `${failed.length} files didn't upload. See Upload for why.`, { error: true, ms: 9000 });
 }
 
 function drawRow(r) {
@@ -43,6 +48,10 @@ function drawRow(r) {
   const fill = r.el.querySelector(".meter i");
   fill.style.width = `${Math.round(r.progress * 100)}%`;
   r.el.querySelector(".st").textContent = r.state;
+  r.el.classList.toggle("failed", !!r.failed);
+  if (r.failed && !r.el.querySelector(".retry")) {
+    r.el.append(h("button", { class: "btn sm retry", onclick: () => { r.failed = false; r.state = "Waiting"; r.progress = 0; r.el.querySelector(".retry")?.remove(); drawRow(r); pump(); } }, "Retry"));
+  }
 }
 
 function draw() {

@@ -19,8 +19,8 @@ object Tokens {
         val text2 = Color(0xFFAAAAAA)
         val text3 = Color(0xFF717171)
         val border = Color(0x1AFFFFFF)
-        val accent = Color(0xFFFF3B30)
-        val accent2 = Color(0xFFFF6A2B)
+        val accent = Color(0xFFEC3B36)
+        val accent2 = Color(0xFFFF7A2F)
         val accentText = Color(0xFFFFFFFF)
         val link = Color(0xFF3EA6FF)
         val ok = Color(0xFF2BA640)
@@ -43,8 +43,8 @@ object Tokens {
         val text2 = Color(0xFF606060)
         val text3 = Color(0xFF909090)
         val border = Color(0x1A000000)
-        val accent = Color(0xFFFF3B30)
-        val accent2 = Color(0xFFFF6A2B)
+        val accent = Color(0xFFEC3B36)
+        val accent2 = Color(0xFFFF7A2F)
         val accentText = Color(0xFFFFFFFF)
         val link = Color(0xFF065FD4)
         val ok = Color(0xFF2BA640)
@@ -54,6 +54,12 @@ object Tokens {
         val chipActive = Color(0xFF0F0F0F)
         val chipActiveText = Color(0xFFFFFFFF)
         val scrim = Color(0x73000000)
+    }
+    /** The logo's gradient, for primary actions, progress and highlights. */
+    object Brand {
+        val start = Color(0xFFFF7A2F)
+        val end = Color(0xFFE5243B)
+        val gradient = listOf(start, end)
     }
     object Radius {
         val xs = 4.dp

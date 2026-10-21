@@ -58,13 +58,13 @@ async function sha256(file, onProgress) {
   throw new Error("Files over 1.5 GB: use the Paddock app or copy to the NAS share");
 }
 
-export async function uploadFile(file, { libraryId, subfolder, onProgress } = {}) {
+export async function uploadFile(file, { libraryId, subfolder, projectId, onProgress } = {}) {
   onProgress?.(0, "Checking…");
   const hash = await sha256(file);
   const start = await api.post("/api/uploads", {
     filename: file.name, size: file.size, sha256: hash, taken_at: file.lastModified / 1000,
-    library_id: libraryId || null, subfolder: subfolder || null,
-  });
+    library_id: libraryId || null, subfolder: subfolder || null, project_id: projectId || null,
+  }, { quiet: true });
   if (start.status === "duplicate") { onProgress?.(1, "Already in Paddock"); return { duplicate: true, item_id: start.item_id }; }
   let offset = start.offset;
   const chunk = start.chunk_size || 8 * 1024 * 1024;
@@ -77,16 +77,23 @@ export async function uploadFile(file, { libraryId, subfolder, onProgress } = {}
           method: "PUT", body: part, headers: { "x-paddock": "1", "content-type": "application/octet-stream" },
         });
         if (r.status === 409) { offset = Number(r.headers.get("upload-offset") || offset); break; }
-        if (!r.ok) throw new Error(`upload failed (${r.status})`);
+        if (!r.ok) {
+          // the server says why (disk full, folder read-only...); only a dropped connection is worth retrying
+          const detail = (await r.json().catch(() => ({}))).detail;
+          const err = new Error(detail || `The server refused the file (${r.status})`);
+          err.fatal = r.status < 500 || r.status === 507 || r.status === 503;
+          throw err;
+        }
         offset = (await r.json()).offset;
         break;
       } catch (e) {
-        if (++tries > 5) throw e;
+        if (e.fatal) throw e;
+        if (++tries > 5) throw new Error(navigator.onLine ? "The connection to the server keeps dropping. It'll resume from here when you retry." : "You're offline. It'll resume from here when you retry.");
         await new Promise((res) => setTimeout(res, 1000 * tries));
       }
     }
     onProgress?.(offset / file.size, "Uploading…");
   }
   onProgress?.(1, "Processing…");
-  return api.post(`/api/uploads/${start.upload_id}/complete`);
+  return api.post(`/api/uploads/${start.upload_id}/complete`, {}, { quiet: true });
 }

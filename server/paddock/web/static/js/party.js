@@ -4,7 +4,8 @@
 import { api } from "./api.js";
 import { ctx, navigate } from "./app.js";
 import { h, icon, iconBtn, toast, copyText, confirmDialog, modal, field, switchEl } from "./ui.js";
-import { VoiceSession, voiceSupported } from "./voice.js";
+import { voiceSupported } from "./voice.js";
+import { voiceHub } from "./live.js";
 
 export const REACTIONS = ["😂", "❤️", "😮", "👏", "😢", "🔥", "👀", "🎉"];
 
@@ -68,6 +69,8 @@ export class PartySync extends EventTarget {
       case "chat": case "notice": this.emit("chat", msg); break;
       case "reaction": this.emit("reaction", msg); break;
       case "error": toast(msg.error, { error: true }); break;
+      case "queue": this.queue = msg.queue; this.emit("queue", msg); break;
+      case "queue_empty": if (this.fallback) this.switchTo(this.fallback); this.fallback = null; break;
       case "ended": this.emit("ended", { reason: "The host ended the watch party." }); break;
     }
   }
@@ -154,6 +157,10 @@ export class PartySync extends EventTarget {
   }
 
   switchTo(item, play = true) { this.send({ type: "item", item_id: item.id, title: item.title, play }); }
+  /** Move on: the party's queue first; if it's empty, `fallback` (this player's own up-next pick). */
+  next(fromId, fallback) { this.fallback = fallback || null; this.send({ type: "next", from: fromId }); }
+  queueAdd(item) { this.send({ type: "queue_add", item_id: item.id }); }
+  queueRemove(index) { this.send({ type: "queue_remove", index }); }
 
   close() {
     this.closed = true;
@@ -168,19 +175,28 @@ export class PartySync extends EventTarget {
 
 export async function startPartyDialog(item, player) {
   const people = await api.get("/api/people").catch(() => []);
-  let everyone = true, control = "everyone", wait = true;
+  const communities = (ctx.user.communities || []).filter((c) => c.settings?.parties !== false);
+  let who = communities.length ? `c:${communities[0].id}` : "everyone", control = "everyone", wait = true;
   const picked = new Set();
-  const pick = h("div", { class: "people-pick", hidden: true }, people.filter((p) => p.username !== ctx.user.username).map((p) =>
-    h("label", { class: "row small" }, h("input", { type: "checkbox", onchange: (e) => (e.target.checked ? picked.add(p.username) : picked.delete(p.username)) }), p.username)));
+  const pick = h("div", { class: "people-pick", hidden: true }, people.map((p) =>
+    h("label", { class: "row small" }, h("input", { type: "checkbox", onchange: (e) => (e.target.checked ? picked.add(p.username) : picked.delete(p.username)) }), p.display_name || p.username)));
+  const options = [
+    ...communities.map((c) => [`c:${c.id}`, `Everyone in ${c.name}`]),
+    ["everyone", "Anyone with an account here"],
+    ["invite", "Only people I pick"],
+  ];
+  const whoSel = h("select", { class: "input" }, options.map(([v, l]) => h("option", { value: v, selected: v === who }, l)));
+  whoSel.onchange = () => { who = whoSel.value; pick.hidden = who !== "invite"; };
   const m = modal("Watch together", h("div", { class: "stack" },
-    h("p", { class: "muted", style: { margin: 0 } }, "Everyone streams from this server in their own quality, and Paddock keeps all players in step: play, pause and skip happen for everyone."),
-    switchEl("Anyone with an account here can join", true, (v) => { everyone = v; pick.hidden = v; }, "Turn off to invite specific people."),
+    h("p", { class: "muted", style: { margin: 0 } }, "Everyone streams from this server in their own quality, and Paddock keeps all players in step: play, pause and skip happen for everyone. Anyone in the party can add to its queue."),
+    field("Who can join", whoSel, communities.length ? "Members are told the party has started." : null),
     pick,
     switchEl("Everyone can control playback", true, (v) => { control = v ? "everyone" : "host"; }, "Off: only you can play, pause and skip."),
     switchEl("Wait for everyone when someone is buffering", true, (v) => { wait = v; })), {
     foot: [h("button", { class: "btn ghost", onclick: () => m.close() }, "Cancel"), h("button", { class: "btn accent", onclick: async () => {
-      const p = await api.post("/api/parties", { item_id: item.id, everyone, invite: [...picked], control, wait_for_all: wait,
-        position: player ? player.currentTime() : 0 });
+      const community = who.startsWith("c:") ? +who.slice(2) : null;
+      const p = await api.post("/api/parties", { item_id: item.id, everyone: who === "everyone", invite: who === "invite" ? [...picked] : [],
+        community_id: community, control, wait_for_all: wait, position: player ? player.currentTime() : 0 });
       m.close();
       copyText(`${location.origin}/party/${p.id}`);
       toast(`Watch party started · code ${p.id} · invite link copied`);
@@ -192,10 +208,11 @@ export async function startPartyDialog(item, player) {
 // ---- the party panel on the watch page -------------------------------------------------------------------
 
 export function partyPanel(sync, player) {
-  let voice = null;
+  const room = `party:${sync.id}`;
   let party = null;
   const roster = h("div", { class: "party-members" });
   const voiceBox = h("div", { class: "party-voice" });
+  const queueBox = h("div", { class: "party-queue" });
   const chatList = h("div", { class: "party-chat" });
   const status = h("div", { class: "muted small" });
   const gesture = h("button", { class: "btn accent party-gesture", hidden: true, onclick: () => { sync.resume(); } }, icon("play", "sm"), "Tap to join playback");
@@ -203,11 +220,11 @@ export function partyPanel(sync, player) {
   const floats = h("div", { class: "party-floats" });
   player.root.append(floats);
   let members = [];
-  let speakingIds = new Set();
+  const inVoice = () => voiceHub.room === room;
 
   const drawMembers = () => roster.replaceChildren(...members.map((m) => {
-    const vms = voice ? voice.members.filter((x) => x.user_id === m.user_id) : [];   // one person may be on several devices
-    const talking = vms.some((x) => speakingIds.has(x.id));
+    const vms = inVoice() ? voiceHub.members.filter((x) => x.user_id === m.user_id) : [];   // one person may be on several devices
+    const talking = vms.some((x) => voiceHub.speaking.has(x.id));
     return h("div", { class: `party-member${talking ? " talking" : ""}` },
       h("span", { class: "avatar" }, m.username[0].toUpperCase()),
       h("span", null, m.username, m.host ? h("span", { class: "muted small" }, " · host") : null),
@@ -216,44 +233,39 @@ export function partyPanel(sync, player) {
   }));
 
   const drawVoice = () => {
-    if (!voice) {
+    if (!inVoice()) {
       voiceBox.replaceChildren(voiceSupported()
-        ? h("button", { class: "btn sm", onclick: joinVoice }, icon("chat", "sm"), "Join voice")
+        ? h("button", { class: "btn sm", onclick: () => voiceHub.join(room, "Watch party") }, icon("chat", "sm"), "Join voice")
         : h("span", { class: "muted small" }, "Voice needs a browser with microphone support."));
       return;
     }
-    const level = h("div", { class: "meter voice-level" }, h("i"));
-    voice.addEventListener("level", (e) => { level.firstChild.style.width = `${Math.round(e.detail * 100)}%`; });
     voiceBox.replaceChildren(
-      h("button", { class: `btn sm${voice.muted ? " danger" : ""}`, onclick: () => { voice.setMuted(!voice.muted); drawVoice(); } },
-        icon(voice.muted ? "mute" : "volume", "sm"), voice.muted ? "Unmute" : "Mute"),
-      h("button", { class: `btn sm${voice.deafened ? " danger" : ""}`, onclick: () => { voice.setDeafened(!voice.deafened); drawVoice(); } },
-        voice.deafened ? "Undeafen" : "Deafen"),
-      h("button", { class: "btn sm ghost", onclick: leaveVoice }, "Leave voice"), level,
-      h("div", { class: "muted small" }, "Tip: headphones stop the movie echoing into your mic."));
+      h("button", { class: `btn sm${voiceHub.muted ? " danger" : ""}`, onclick: () => voiceHub.setMuted(!voiceHub.muted) },
+        icon(voiceHub.muted ? "mute" : "volume", "sm"), voiceHub.muted ? "Unmute" : "Mute"),
+      h("button", { class: "btn sm ghost", onclick: () => voiceHub.leave() }, "Leave voice"),
+      h("div", { class: "muted small" }, "Voice stays on while you browse. Headphones stop the movie echoing into your mic."));
   };
 
-  async function joinVoice() {
-    voice = new VoiceSession(`party:${sync.id}`);
-    voice.addEventListener("roster", drawMembers);
-    voice.addEventListener("speaking", (e) => {
-      if (e.detail.value) speakingIds.add(e.detail.id); else speakingIds.delete(e.detail.id);
-      duck();
-      drawMembers();
-    });
-    voice.addEventListener("error", (e) => { toast(e.detail, { error: true }); if (voice?.closed) { voice = null; drawVoice(); } });
-    try { await voice.start(); } catch (e) { toast(e.message, { error: true }); voice = null; }
-    drawVoice(); drawMembers();
-  }
-  function leaveVoice() { voice?.stop(); voice = null; speakingIds = new Set(); duck(); drawVoice(); drawMembers(); }
+  const drawQueue = () => {
+    const q = sync.queue || [];
+    queueBox.replaceChildren(q.length ? h("div", null,
+      h("div", { class: "row" }, h("b", { style: { flex: 1 } }, "Up next in the party"), h("span", { class: "muted small" }, `${q.length}`)),
+      ...q.map((e, i) => h("div", { class: "row small queue-entry" }, h("span", { class: "muted" }, `${i + 1}`),
+        h("span", { style: { flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, e.title),
+        h("span", { class: "muted" }, e.by),
+        e.by === ctx.user.username || sync.canControl ? iconBtn("close", "Remove", () => sync.queueRemove(i)) : null)))
+      : h("div", { class: "muted small" }, "Add videos to the party's queue from Up next."));
+  };
 
   // lower the movie a little while friends are talking
   const baseVolume = () => player.video.dataset.partyBase ? +player.video.dataset.partyBase : player.video.volume;
   function duck() {
-    const others = [...speakingIds].some((id) => id !== voice?.me);
+    const others = inVoice() && voiceHub.othersTalking();
     if (others && !player.video.dataset.partyBase) { player.video.dataset.partyBase = player.video.volume; player.video.volume = baseVolume() * 0.45; }
     else if (!others && player.video.dataset.partyBase) { player.video.volume = baseVolume(); delete player.video.dataset.partyBase; }
   }
+  const onVoice = () => { drawVoice(); drawMembers(); duck(); };
+  voiceHub.addEventListener("change", onVoice);
 
   const addChat = (msg) => {
     chatList.append(msg.type === "notice" ? h("div", { class: "muted small" }, msg.text)
@@ -268,15 +280,20 @@ export function partyPanel(sync, player) {
   sync.addEventListener("hello", (e) => {
     party = e.detail.party;
     members = party.members;
+    sync.queue = party.queue || [];
     head.replaceChildren(h("div", { style: { flex: 1 } }, h("b", null, "Watch party"), h("div", { class: "muted small" },
-      `Code ${party.id} · hosted by ${party.host}${party.control === "host" ? " · host controls" : ""}`)),
+      `Code ${party.id} · hosted by ${party.host}${party.community ? ` · ${party.community}` : ""}${party.control === "host" ? " · host controls" : ""}`)),
       iconBtn("link", "Copy invite link", () => { copyText(`${location.origin}/party/${party.id}`); toast("Invite link copied"); }),
       party.host_id === ctx.user.id ? h("button", { class: "btn sm danger", onclick: endParty }, "End") : h("button", { class: "btn sm ghost", onclick: leave }, "Leave"));
     chatList.replaceChildren();
     e.detail.chat.forEach(addChat);
-    drawMembers();
+    drawMembers(); drawQueue();
   });
   sync.addEventListener("members", (e) => { members = e.detail; drawMembers(); });
+  sync.addEventListener("queue", (e) => {
+    drawQueue();
+    if (e.detail.action === "add" && e.detail.by !== ctx.user.username) addChat({ type: "notice", text: `${e.detail.by} queued ${e.detail.title}` });
+  });
   sync.addEventListener("chat", (e) => addChat(e.detail));
   sync.addEventListener("reaction", (e) => {
     const f = h("div", { class: "party-float", style: { left: `${10 + Math.random() * 75}%` } }, e.detail.emoji,
@@ -287,21 +304,26 @@ export function partyPanel(sync, player) {
   sync.addEventListener("state", (e) => { status.textContent = e.detail.hold ? `Waiting for ${e.detail.waiting_for.join(", ")}…` : ""; });
   sync.addEventListener("gesture", (e) => { gesture.hidden = !e.detail; });
   sync.addEventListener("status", (e) => { status.textContent = e.detail; });
-  sync.addEventListener("ended", (e) => { toast(e.detail.reason); close(); navigate(location.pathname, { replace: true }); });
+  sync.addEventListener("ended", (e) => {
+    toast(e.detail.reason);
+    if (inVoice()) voiceHub.leave();
+    close(); navigate(location.pathname, { replace: true });
+  });
 
   async function endParty() {
     if (await confirmDialog("End the watch party?", "Everyone stays on this video but stops being synced.", { ok: "End party", danger: true })) {
       await api.del(`/api/parties/${sync.id}`);
     }
   }
-  function leave() { close(); navigate(location.pathname, { replace: true }); }
+  function leave() { if (inVoice()) voiceHub.leave(); close(); navigate(location.pathname, { replace: true }); }
 
   const head = h("div", { class: "row" }, h("b", null, "Watch party"), h("span", { class: "muted small" }, "connecting…"));
   const panel = h("div", { class: "party-panel" }, head, status, roster, voiceBox,
     h("div", { class: "party-reactions" }, REACTIONS.map((r) => h("button", { class: "reaction", onclick: () => sync.send({ type: "reaction", emoji: r }) }, r))),
-    chatList, chatInput);
-  drawVoice();
+    queueBox, chatList, chatInput);
+  drawVoice(); drawQueue();
 
-  function close() { voice?.stop(); voice = null; sync.close(); gesture.remove(); floats.remove(); }
+  // leaving the page keeps voice going (the dock has it); the sync itself stops
+  function close() { voiceHub.removeEventListener("change", onVoice); sync.close(); gesture.remove(); floats.remove(); }
   return { el: panel, close };
 }

@@ -20,7 +20,7 @@ export async function render(root, { match }) {
   const list = await api.get("/api/projects");
   if (!list.length) {
     root.append(emptyState("work", "Start your first project",
-      "A project gathers everything about one build, trip or race weekend — footage, photos, sounds, CAD, notes and locations — and helps you plan a video about it.",
+      "A project gathers everything about one thing — a build, a trip, research, anything — footage, photos, sounds, CAD, notes and places. When it's headed for a video, Paddock helps you organise your thoughts and clips into one.",
       h("button", { class: "btn accent", onclick: newProject }, icon("add"), "New project")));
     return;
   }
@@ -32,16 +32,60 @@ export async function render(root, { match }) {
   }
 }
 
+const KINDS = [["video", "Making a video", "videocam"], ["build", "A build", "build"], ["trip", "A trip or event", "place"],
+  ["research", "Research", "doc"], ["general", "Anything else", "folder"]];
+
 async function newProject() {
+  let kind = "video";
   const name = h("input", { class: "input", placeholder: "e.g. Turbo manifold build" });
-  const goal = h("textarea", { class: "input", placeholder: "What should a video about this show? (optional)" });
+  const goal = h("textarea", { class: "input", placeholder: "What's it for? What should a video about it show? (optional)" });
   const loc = h("input", { class: "input", placeholder: "Shop, track, trail… (optional)" });
-  const m = modal("New project", h("div", null, field("Name", name), field("Goal", goal), field("Location", loc)), {
-    foot: [h("button", { class: "btn ghost", onclick: () => m.close() }, "Cancel"), h("button", { class: "btn primary", onclick: async () => {
+  const kinds = h("div", { class: "kind-pick" });
+  const drawKinds = () => kinds.replaceChildren(...KINDS.map(([k, l, ic]) => h("button", { class: k === kind ? "sel" : "", onclick: () => { kind = k; drawKinds(); } }, icon(ic, "sm"), l)));
+  drawKinds();
+  const m = modal("New project", h("div", null, field("What kind?", kinds), field("Name", name), field("Goal", goal), field("Location", loc)), {
+    wide: true,
+    foot: [h("button", { class: "btn ghost", onclick: () => m.close() }, "Cancel"), h("button", { class: "btn accent", onclick: async () => {
       if (!name.value.trim()) return name.focus();
-      const r = await api.post("/api/projects", { name: name.value, goal: goal.value, location_name: loc.value || null });
+      const r = await api.post("/api/projects", { name: name.value, goal: goal.value, location_name: loc.value || null, kind });
       m.close(); navigate(`/project/${r.id}`);
     } }, "Create")],
+  });
+}
+
+function addFiles(p, id) {
+  const pick = h("input", { type: "file", multiple: true, hidden: true });
+  pick.addEventListener("change", async () => {
+    const files = [...pick.files];
+    if (!files.length) return;
+    const { queueUploads } = await import("./upload.js");
+    queueUploads(files, { projectId: id });
+    toast(`Adding ${files.length} file${files.length > 1 ? "s" : ""} to ${p.name}. Follow along on the Upload page.`, {
+      action: { label: "Show", fn: () => navigate("/upload") } });
+    pick.remove();
+  });
+  document.body.append(pick);
+  pick.click();
+}
+
+async function shareProject(p, id) {
+  const mine = ctx.user.is_admin ? await api.get("/api/communities") : (ctx.user.communities || []);
+  const grants = new Map((p.communities || []).map((c) => [c.id, c.access]));
+  const rows = mine.map((cm) => {
+    const level = h("select", { class: "input", style: { width: "auto" }, disabled: !grants.has(cm.id), onchange: (e) => grants.set(cm.id, e.target.value) },
+      h("option", { value: "write", selected: grants.get(cm.id) !== "read" }, "Can work on it"), h("option", { value: "read", selected: grants.get(cm.id) === "read" }, "Can view"));
+    return h("label", { class: "row small" }, h("input", { type: "checkbox", checked: grants.has(cm.id), onchange: (e) => {
+      if (e.target.checked) grants.set(cm.id, level.value); else grants.delete(cm.id);
+      level.disabled = !e.target.checked;
+    } }), h("span", { style: { flex: 1 } }, cm.name), level);
+  });
+  const m = modal(`Who can open ${p.name}`, h("div", { class: "stack" },
+    h("p", { class: "muted small", style: { margin: 0 } }, "Not shared with any community: everyone on this server can open it. Pick communities to keep it to them."),
+    rows.length ? h("div", { class: "people-pick" }, rows) : h("p", { class: "muted small" }, "You're not in any community yet.")), {
+    foot: [h("button", { class: "btn ghost", onclick: () => m.close() }, "Cancel"), h("button", { class: "btn accent", onclick: async () => {
+      await api.put(`/api/projects/${id}/access`, { communities: [...grants].map(([cid, access]) => ({ id: cid, access })) });
+      m.close(); toast("Saved"); navigate(`/project/${id}`, { replace: true });
+    } }, "Save")],
   });
 }
 
@@ -52,9 +96,12 @@ async function detail(root, id) {
     STATUSES.map((s) => h("option", { value: s, selected: s === p.status }, s)));
   root.append(h("div", { class: "page-head" },
     h("div", { style: { flex: 1, minWidth: 0 } }, h("h1", null, p.name),
-      h("div", { class: "muted" }, [p.location_name, `${p.items.length} items`, `${p.summary.footage_minutes} min footage`, `updated ${timeAgo(p.updated_at)}`].filter(Boolean).join(" · "))),
-    h("div", { class: "actions" }, statusSel,
-      h("button", { class: "btn", onclick: () => editProject(p) }, icon("edit"), "Edit"),
+      h("div", { class: "muted" }, [p.kind_label, p.location_name, `${p.items.length} items`, p.summary.footage_minutes ? `${p.summary.footage_minutes} min footage` : null,
+        p.communities?.length ? `shared with ${p.communities.map((c) => c.name).join(", ")}` : null, `updated ${timeAgo(p.updated_at)}`].filter(Boolean).join(" · "))),
+    h("div", { class: "actions" }, p.access === "write" ? statusSel : h("span", { class: "pill" }, "view only"),
+      p.access === "write" ? h("button", { class: "btn accent", onclick: () => addFiles(p, id) }, icon("upload"), "Add files") : null,
+      p.access === "write" ? h("button", { class: "btn", onclick: () => shareProject(p, id) }, icon("users"), "Share") : null,
+      p.access === "write" ? h("button", { class: "btn", onclick: () => editProject(p) }, icon("edit"), "Edit") : null,
       h("button", { class: "btn", onclick: () => shareDialog(null, id) }, icon("share"), "Share CAD"),
       iconBtn("trash", "Delete project", async () => {
         if (await confirmDialog("Delete project?", "Only the project is deleted — its media stays in your libraries.", { ok: "Delete", danger: true })) {
@@ -63,7 +110,7 @@ async function detail(root, id) {
       }))));
   if (p.goal) root.append(h("p", { class: "muted", style: { marginTop: "-8px" } }, h("b", null, "Goal: "), p.goal));
 
-  const tabs = [["overview", "Overview"], ["media", "Media"], ["plan", "Video plan"], ["notes", `Notes (${p.notes.length})`], ["chat", "Ask AI"]];
+  const tabs = [["overview", "Overview"], ["media", "Media"], ["plan", p.kind === "video" ? "Video plan" : "Make a video"], ["notes", `Notes (${p.notes.length})`], ["chat", "Ask AI"]];
   const tabBar = h("div", { class: "tabs" });
   const body = h("div");
   const show = (t) => {

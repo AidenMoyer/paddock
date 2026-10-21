@@ -42,6 +42,8 @@ def css() -> str:
 
     m = T["motion"]
     lines = ["/* Generated from design/tokens.json — do not edit by hand. */", ":root {", block("dark"),
+             f"  --brand-start: {css_color(T['brand']['start'])};", f"  --brand-end: {css_color(T['brand']['end'])};",
+             "  --brand: linear-gradient(135deg, var(--brand-start), var(--brand-end));",
              *(f"  --radius-{k}: {v}px;" for k, v in T["radius"].items()),
              *(f"  --space-{k}: {v}px;" for k, v in T["space"].items()),
              f"  --dur-fast: {m['fast']}ms;", f"  --dur-base: {m['base']}ms;", f"  --dur-slow: {m['slow']}ms;", f"  --dur-page: {m['page']}ms;",
@@ -70,6 +72,9 @@ def kotlin() -> str:
         "object Tokens {",
         "    object Dark {", scheme("dark"), "    }",
         "    object Light {", scheme("light"), "    }",
+        "    /** The logo's gradient, for primary actions, progress and highlights. */",
+        "    object Brand {", f"        val start = {kt_color(T['brand']['start'])}", f"        val end = {kt_color(T['brand']['end'])}",
+        "        val gradient = listOf(start, end)", "    }",
         "    object Radius {", *(f"        val {k} = {v}.dp" for k, v in T["radius"].items()), "    }",
         "    object Space {", *(f"        val {k} = {v}.dp" for k, v in T["space"].items()), "    }",
         "    object Type {",

@@ -1,7 +1,7 @@
 // Browsing: libraries, movies, shows, music, home videos, RED shoot days, engineering, search, favorites, collections.
 
 import { api, qs, thumbUrl } from "../api.js";
-import { ctx, navigate, setTitle, itemHref } from "../app.js";
+import { ctx, mediaTabs, navigate, setTitle, itemHref } from "../app.js";
 import {
   bulkActions, enableSelection, groupCard, itemCard, itemGrid, addToProjectDialog, thumbBox, groupHref,
 } from "../cards.js";
@@ -17,6 +17,7 @@ export async function render(root, { match, query }) {
   cleanup = [];
   const [, a, b] = match;
   const key = b ? decodeURIComponent(b) : null;
+  if (["movies", "shows", "music", "videos", "red", "engineering"].includes(a)) root.append(mediaTabs());
   const view = {
     movies: () => movies(root), shows: () => groups(root, "show:", "TV Shows", "tv"), music: () => music(root),
     videos: () => homeVideos(root), red: () => footage(root), engineering: () => engineering(root, query),

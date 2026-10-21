@@ -8,6 +8,7 @@ import { queue } from "../queue.js";
 import { Player, clientCodecs } from "../player.js";
 import { PartySync, partyPanel, startPartyDialog } from "../party.js";
 import { shareOnlineDialog } from "./publiclinks.js";
+import { commentsPanel } from "../comments.js";
 import { h, icon, iconBtn, fmtDuration, fmtBytes, fmtDateTime, timeAgo, toast, menu, promptDialog, resLabel, copyText, LIB_ICON } from "../ui.js";
 
 export async function render(root, { match, query }) {
@@ -61,7 +62,8 @@ export async function render(root, { match, query }) {
     sync.addEventListener("switch", (e) => navigate(`/watch/${e.detail.item_id}?party=${partyId}`, { replace: true }));
   }
   function goNext(n) {
-    if (sync) { if (sync.canControl) sync.switchTo(n); return; }   // the party moves on together
+    // the party moves on together: the next thing in its queue, or what this player would have picked
+    if (sync) { if (sync.canControl) sync.next(id, n); return; }
     navigate(`/watch/${n.id}`);
   }
 
@@ -141,6 +143,8 @@ export async function render(root, { match, query }) {
   const transcriptPanel = h("div", { class: "desc-box", hidden: true }, h("div", { class: "row" }, h("h3", { style: { flex: 1 } }, "Transcript"),
     h("a", { class: "btn ghost sm", href: `/api/items/${id}/captions.vtt`, download: `${item.title}.vtt` }, icon("download", "sm"), "VTT")), transcriptBox);
   primary.append(transcriptPanel);
+  const comments = commentsPanel(id, { player });
+  primary.append(comments.el);
   let lastCount = 0;
   function drawTranscript(cues) {
     if (!cues.length || cues.length === lastCount) return;
@@ -185,7 +189,14 @@ export async function render(root, { match, query }) {
     h("label", { class: "row small muted" }, "Autoplay", autoplay)));
   if (upNext.length) {
     const list = h("div", { class: "upnext" });
-    for (const r of upNext) list.append(itemCard(r, { badge: false }));
+    for (const r of upNext) {
+      const card = itemCard(r, { badge: false });
+      // in a watch party, anything can go on the party's queue
+      if (sync) card.append(h("button", { class: "btn sm ghost queue-add", title: "Add to the party's queue", onclick: (e) => {
+        e.preventDefault(); e.stopPropagation(); sync.queueAdd(r); toast(`Added “${r.title}” to the party's queue`);
+      } }, icon("queue", "sm"), "Queue"));
+      list.append(card);
+    }
     secondary.append(list);
   } else {
     secondary.append(h("div", { class: "muted small" }, "Nothing else to play yet."));
@@ -197,5 +208,5 @@ export async function render(root, { match, query }) {
     toast("Share link copied — valid 72 h on your network/VPN");
   }
 
-  return { destroy: () => { party?.close(); player?.destroy(); window.removeEventListener("paddock:queue", onQueue); } };
+  return { destroy: () => { comments.destroy(); party?.close(); player?.destroy(); window.removeEventListener("paddock:queue", onQueue); } };
 }

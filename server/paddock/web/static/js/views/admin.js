@@ -4,13 +4,14 @@ import { api, qs } from "../api.js";
 import { ctx, navigate, refreshLibraries, setTitle } from "../app.js";
 import { pairDialog } from "./account.js";
 import { publicPage } from "./publiclinks.js";
+import { communitiesPage, libraryAccessDialog, userDialog } from "./communities.js";
 import {
   h, icon, iconBtn, clear, emptyState, fmtBytes, fmtDateTime, timeAgo, toast, modal, field, confirmDialog, switchEl, copyText,
   loader, LIB_ICON,
 } from "../ui.js";
 
 const SECTIONS = [
-  ["overview", "dashboard", "Overview"], ["system", "sd", "System & drives"], ["libraries", "folderOpen", "Libraries"], ["users", "users", "Users"],
+  ["overview", "dashboard", "Overview"], ["system", "sd", "System & drives"], ["libraries", "folderOpen", "Libraries"], ["users", "user", "People"], ["communities", "users", "Communities"],
   ["devices", "phone", "Devices"], ["remote", "lan", "Remote access"], ["public", "globe", "Public links"], ["servers", "layers", "Linked servers & backup"],
   ["assistant", "sparkle", "Assistant (AI)"], ["agents", "key", "AI agents (MCP)"], ["transcoding", "bolt", "Transcoding"],
   ["transcription", "cc", "Transcription"], ["printers", "printer", "3D printers"], ["jobs", "refresh", "Jobs"],
@@ -28,7 +29,7 @@ export async function render(root, { match }) {
   const nav = h("nav", null, SECTIONS.map(([id, ic, label]) => h("a", { href: `/admin/${id}`, class: id === section ? "active" : "" }, icon(ic, "sm"), label)));
   const body = h("div", { class: "admin-body" });
   root.append(h("div", { class: "admin" }, nav, body));
-  const fn = { overview, system: systemPage, libraries, users, devices, remote, public: (c) => publicPage(c, timers), servers, assistant, agents, transcoding, transcription, printers, jobs, security, general }[section];
+  const fn = { overview, system: systemPage, libraries, users, communities: communitiesPage, devices, remote, public: (c) => publicPage(c, timers), servers, assistant, agents, transcoding, transcription, printers, jobs, security, general }[section];
   body.append(loader());
   const content = h("div");
   await fn(content);
@@ -119,6 +120,8 @@ async function libraries(c) {
       h("div", { style: { flex: 1, minWidth: "200px" } }, h("h3", null, l.name), h("div", { class: "muted small mono" }, l.path),
         h("div", { class: "muted small" }, `${l.kind_label} · ${l.item_count.toLocaleString()} items · ${l.last_scan ? `scanned ${timeAgo(l.last_scan)}` : "never scanned"} · `,
           h("span", { class: `pill ${l.scan_state === "idle" ? "" : l.scan_state === "missing" ? "bad" : "warn"}` }, l.scan_state))),
+      h("button", { class: "btn sm", title: "Who can see and change this library", onclick: () => libraryAccessDialog(l) }, icon(l.options?.visibility === "communities" ? "users" : "globe", "sm"),
+        l.options?.visibility === "communities" ? (l.communities?.map((x) => x.name).join(", ") || "Nobody yet") : "Everyone"),
       h("a", { class: "btn sm", href: `/library/${l.id}` }, "Browse"),
       h("button", { class: "btn sm", onclick: async () => { await api.post(`/api/libraries/${l.id}/scan`); toast("Scan started"); } }, icon("refresh", "sm"), "Scan"),
       iconBtn("more", "More", (e) => {
@@ -589,8 +592,8 @@ function logsPanel() {
 
 // ---------------- users ----------------
 async function users(c) {
-  const list = await api.get("/api/users");
-  c.append(title("Users", "Everyone in the household gets their own login, watch progress and favorites.",
+  const [list, libs] = await Promise.all([api.get("/api/users"), api.get("/api/libraries")]);
+  c.append(title("People", "Everyone gets their own login, watch progress, favorites and devices. Group people into communities to decide what they see.",
     h("button", { class: "btn accent", onclick: () => {
       const u = h("input", { class: "input", autocomplete: "off" }), p = h("input", { class: "input", type: "password", autocomplete: "new-password" });
       let admin = false;
@@ -602,11 +605,14 @@ async function users(c) {
       });
     } }, icon("add"), "Add user")));
   c.append(h("div", { class: "tbl-wrap" }, h("table", { class: "tbl" },
-    h("thead", null, h("tr", null, ...["User", "Role", "Assistant", "Created", ""].map((t) => h("th", null, t)))),
+    h("thead", null, h("tr", null, ...["Person", "Role", "Communities", "Devices", "Created", ""].map((t) => h("th", null, t)))),
     h("tbody", null, list.map((u) => h("tr", null, h("td", null, h("div", { class: "row" }, h("span", { class: "avatar", style: { width: "28px", height: "28px" } }, u.username[0]), u.display_name)),
-      h("td", null, u.is_admin ? h("span", { class: "pill accent" }, "admin") : "member"), h("td", null, u.allow_ai_changes ? "can edit" : "read-only"),
+      h("td", null, u.is_admin ? h("span", { class: "pill accent" }, "admin") : u.media_only ? h("span", { class: "pill" }, "media-only") : "member"),
+      h("td", { class: "small" }, u.communities.map((x) => x.name).join(", ") || h("span", { class: "muted" }, "—")),
+      h("td", null, h("a", { href: `/admin/devices?user=${encodeURIComponent(u.username)}` }, String(u.devices))),
       h("td", null, timeAgo(u.created_at)),
-      h("td", null, u.id !== ctx.user.id ? h("button", { class: "btn danger sm", onclick: async () => {
+      h("td", null, h("button", { class: "btn sm", onclick: () => userDialog(u, libs) }, "Edit"), " ",
+        u.id !== ctx.user.id ? h("button", { class: "btn danger sm", onclick: async () => {
         if (await confirmDialog(`Delete ${u.username}?`, "Their devices are disconnected and their progress and favorites are removed. Media is not touched.", { ok: "Delete", danger: true })) {
           await api.del(`/api/users/${u.id}`); navigate("/admin/users", { replace: true });
         }
@@ -616,26 +622,36 @@ async function users(c) {
 // ---------------- devices ----------------
 async function devices(c) {
   const list = await api.get("/api/devices");
-  c.append(title("Devices", "Every paired phone has its own token and its own tunnel key. Revoking one never affects the others.",
-    h("button", { class: "btn accent", onclick: () => pairDialog(() => navigate("/admin/devices", { replace: true })) }, icon("phone"), "Connect a phone")));
+  const only = new URLSearchParams(location.search).get("user");
+  c.append(title("Devices", "Phones and computers, by the person signed in on them. Each has its own token and tunnel key, so disconnecting one never affects the others.",
+    h("button", { class: "btn accent", onclick: () => pairDialog(() => navigate("/admin/devices", { replace: true })) }, icon("phone"), "Connect a device")));
   let status = null;
   try { status = await api.get("/api/admin/remote", { quiet: true }); } catch { /* ignore */ }
   const hs = Object.fromEntries((status?.tunnel?.peers || []).map((p) => [p.public_key_prefix, p]));
-  if (!list.length) return c.append(emptyState("phone", "No devices yet"));
-  c.append(h("div", { class: "tbl-wrap" }, h("table", { class: "tbl" },
-    h("thead", null, h("tr", null, ...["Device", "User", "Tunnel", "Last handshake", "Last seen", "Status", ""].map((t) => h("th", null, t)))),
-    h("tbody", null, list.map((d) => {
-      const peer = d.wg_ip ? Object.values(hs).find((p) => p.allowed_ips?.startsWith(d.wg_ip)) : null;
-      return h("tr", null, h("td", null, d.name), h("td", null, d.username), h("td", { class: "mono" }, d.wg_ip || "—"),
-        h("td", null, peer?.latest_handshake ? timeAgo(peer.latest_handshake) : "—"),
-        h("td", null, d.last_seen ? timeAgo(d.last_seen) : "never"),
-        h("td", null, d.revoked_at ? h("span", { class: "pill bad" }, "revoked") : h("span", { class: "pill ok" }, "active")),
-        h("td", null, d.revoked_at ? null : h("button", { class: "btn danger sm", onclick: async () => {
-          if (await confirmDialog(`Disconnect ${d.name}?`, "The token and tunnel key stop working immediately.", { ok: "Disconnect", danger: true })) {
-            await api.del(`/api/devices/${d.id}`); navigate("/admin/devices", { replace: true });
-          }
-        } }, "Disconnect")));
-    })))));
+  const people = [...new Set(list.map((d) => d.username))].sort((a, b) => a.localeCompare(b));
+  c.append(h("div", { class: "chips", style: { marginBottom: "12px" } },
+    h("a", { class: `chip ${!only ? "active" : ""}`, href: "/admin/devices" }, "Everyone"),
+    ...people.map((u) => h("a", { class: `chip ${only === u ? "active" : ""}`, href: `/admin/devices?user=${encodeURIComponent(u)}` },
+      `${u} · ${list.filter((d) => d.username === u && !d.revoked_at).length}`))));
+  const shown = list.filter((d) => !only || d.username === only);
+  if (!shown.length) return c.append(emptyState("phone", "No devices yet"));
+  for (const person of people.filter((u) => !only || u === only)) {
+    const mine = shown.filter((d) => d.username === person);
+    c.append(panel(person, null, h("div", { class: "tbl-wrap" }, h("table", { class: "tbl" },
+      h("thead", null, h("tr", null, ...["Device", "Kind", "Tunnel", "Last handshake", "Last seen", "Status", ""].map((t) => h("th", null, t)))),
+      h("tbody", null, mine.map((d) => {
+        const peer = d.wg_ip ? Object.values(hs).find((p) => p.allowed_ips?.startsWith(d.wg_ip)) : null;
+        return h("tr", null, h("td", null, d.name), h("td", null, h("span", { class: "pill" }, d.platform || "android")), h("td", { class: "mono" }, d.wg_ip || "—"),
+          h("td", null, peer?.latest_handshake ? timeAgo(peer.latest_handshake) : "—"),
+          h("td", null, d.last_seen ? timeAgo(d.last_seen) : "never"),
+          h("td", null, d.revoked_at ? h("span", { class: "pill bad" }, "disconnected") : h("span", { class: "pill ok" }, "active")),
+          h("td", null, d.revoked_at ? null : h("button", { class: "btn danger sm", onclick: async () => {
+            if (await confirmDialog(`Disconnect ${d.name}?`, "The token and tunnel key stop working immediately.", { ok: "Disconnect", danger: true })) {
+              await api.del(`/api/devices/${d.id}`); navigate(location.pathname + location.search, { replace: true });
+            }
+          } }, "Disconnect")));
+      }))))));
+  }
 }
 
 // ---------------- remote access ----------------
@@ -1173,7 +1189,7 @@ async function security(c) {
 
 // ---------------- general ----------------
 async function general(c) {
-  const net = await api.get("/api/admin/network");
+  const [net, ov] = await Promise.all([api.get("/api/admin/network"), api.get("/api/admin/overview")]);
   const name = h("input", { class: "input", value: ctx.server.name });
   const urls = h("textarea", { class: "input mono", placeholder: "https://192.168.1.50:8443" }, net.lan_urls.join("\n"));
   c.append(title("General"));
@@ -1183,4 +1199,9 @@ async function general(c) {
       await api.put("/api/admin/general", { server_name: name.value, lan_urls: urls.value.split("\n").map((s) => s.trim()).filter(Boolean) });
       ctx.server.name = name.value; toast("Saved");
     } }, "Save")));
+  c.append(panel("Everyone on this server", null,
+    switchEl("Media-only for everyone but admins", ov.media_only_everyone, async (v) => { await api.put("/api/admin/general", { media_only_everyone: v }); toast("Saved"); },
+      "Everyone who isn't an admin gets movies, shows, music, photos and home videos only, with watch parties, calls and comments. You can also do this per person under People."),
+    switchEl("Comments everyone can see", ov.comments_everyone, async (v) => { await api.put("/api/admin/general", { comments_everyone: v }); toast("Saved"); },
+      "Off: comments stay inside communities.")));
 }

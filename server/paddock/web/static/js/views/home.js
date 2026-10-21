@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { ctx, setTitle } from "../app.js";
+import { ctx, mediaTabs, setTitle } from "../app.js";
 import { groupCard, itemCard, projectCard, shelf } from "../cards.js";
 import { h, icon, fmtBytes, emptyState } from "../ui.js";
 
@@ -14,11 +14,7 @@ export async function render(root) {
       ctx.user.is_admin ? h("a", { class: "btn accent", href: "/admin/libraries" }, icon("add"), "Add a library") : null));
     return;
   }
-  const chips = h("div", { class: "chips" },
-    ...[["All", "/"], ["Movies", "/movies"], ["TV", "/shows"], ["Music", "/music"], ["Photos", "/photos"], ["Home videos", "/videos"],
-      ["Footage", "/red"], ["Engineering", "/engineering"], ["Projects", "/projects"], ["Favorites", "/favorites"]]
-      .map(([l, href], i) => h("a", { class: `chip ${i === 0 ? "active" : ""}`, href }, l)));
-  root.append(chips);
+  root.append(mediaTabs());
   const parties = await api.get("/api/parties", { quiet: true }).catch(() => []);
   if (parties.length) {
     root.append(h("div", { class: "party-strip" }, h("h3", null, icon("users", "sm"), "Watch parties happening now"),
