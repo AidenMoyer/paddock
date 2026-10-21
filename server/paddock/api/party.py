@@ -40,6 +40,36 @@ def _item_for(user_id: int, item_id: int) -> dict | None:
 
 parties.item_check = _item_for
 
+WARM_SEGMENTS = 3            # about the first 18 seconds
+
+
+def _warm(item_id: int) -> None:
+    """Encode the start of a video before the party gets to it, so everyone (near or far) starts together
+    instead of all waiting on the transcoder. Runs in the background; the segments land in the shared cache."""
+    from .. import jobs, transcode
+    from .media import _source_for
+
+    item = db.q1("SELECT * FROM items WHERE id=? AND trashed_at IS NULL", (item_id,))
+    if not item or item["kind"] not in ("video", "red_clip"):
+        return
+    meta = json.loads(item["meta"] or "{}")
+
+    def run(ctx):
+        try:
+            src = _source_for(item, meta)
+        except Exception:  # noqa: BLE001 - e.g. a RED clip without a proxy: nothing to warm
+            return "skipped"
+        rungs = [p for p in transcode.available_profiles(meta) if p in ("1080p", "720p", "480p")][:2]
+        for p in rungs:
+            for seg in range(WARM_SEGMENTS):
+                transcode.segments.segment(item, meta, src, p, seg)
+        return f"warmed {', '.join(rungs)}"
+
+    jobs.submit("party-warm", str(item_id), run)
+
+
+parties.on_upcoming = _warm
+
 
 class NewParty(BaseModel):
     item_id: int

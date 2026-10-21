@@ -114,6 +114,8 @@ class Parties:
         self.lock = asyncio.Lock()
         # may this person put this item on screen for everyone? (set by the API: library access)
         self.item_check: Callable[[int, int], dict | None] = lambda user_id, item_id: None
+        # called with an item id that's about to play (queued, or switched to): the API pre-encodes its start
+        self.on_upcoming: Callable[[int], None] = lambda item_id: None
 
     def new_id(self) -> str:
         alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"     # no 0/O/1/I: easy to read out loud
@@ -190,6 +192,8 @@ class Parties:
             if len(p.queue) >= MAX_QUEUE:
                 return {"type": "error", "error": "The queue is full"}
             p.queue.append({"item_id": item["id"], "title": item["title"], "by": m.username})
+            if len(p.queue) <= 2:
+                self.on_upcoming(item["id"])
             self.send(p, {"type": "queue", "queue": p.queue, "by": m.username, "action": "add", "title": item["title"]})
             return None
         if kind == "queue_remove":
@@ -234,6 +238,8 @@ class Parties:
                 if not isinstance(item, int) or not self.item_check(m.user_id, item):
                     return {"type": "error", "error": "Bad item"}
                 p.item_id, p.title = item, str(title or p.title)[:200]
+                if p.queue:
+                    self.on_upcoming(p.queue[0]["item_id"])     # and get the one after ready too
                 # "play": keep the party going (autoplay / Next): start once everyone has had time to load
                 p.position, p.playing = 0.0, bool(msg.get("play"))
                 p.at = now + (START_LEAD + SWITCH_LOAD if p.playing else 0)
