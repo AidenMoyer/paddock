@@ -20,6 +20,8 @@ Everything is on the [latest release](https://github.com/AidenMoyer/paddock/rele
 | **Paddock OS, NVIDIA edition** (`paddock-os-nvidia-*.iso`) | The same, plus the NVIDIA driver for NVENC/NVDEC (GTX 900-series and newer). |
 | **TrueNAS app** (`paddock-truenas-*.yaml`) | Paste into *Apps → Discover Apps → ⋮ → Install via YAML*. |
 | **Android app** (`paddock-*.apk`) | Android 8 or newer. |
+| **Windows app** (`paddock-*-windows-x64.msi`) | Windows 10 and 11. |
+| **Linux app** (`paddock-*-linux-amd64.deb`) | Debian, Ubuntu and similar. |
 | **Paddock Node** (`paddock-node-*.yaml`) | The partner server for off-site backups (any Docker host). |
 
 Container images: `ghcr.io/aidenmoyer/paddock` and `ghcr.io/aidenmoyer/paddock-wg`. Every release lists
@@ -47,19 +49,21 @@ building a RAID 1 pool) before it's published.
 
 | | |
 |---|---|
-| **Watch** | Movies, shows (seasons/episodes), music (albums, mini-player), home videos. Player with **Auto** (adaptive), **Original** (untouched bitstream) and 4K→360p quality you can switch any time; GPU transcoding (NVENC / Quick Sync / VAAPI) with automatic CPU fallback; segment cache, encode-ahead with throttling, optional pre-transcode; scrub previews; resume; PiP; keyboard shortcuts. Originals are never modified. |
-| **Watch parties** | Watch together with friends and family wherever they are: one shared clock keeps every player in step through play, pause, skips and moving to the next video, waits for anyone who's buffering, and everyone streams in their own quality. Chat, emoji reactions over the video, invite links, and a *happening now* list on Home. |
-| **Voice chat** | Built into Paddock, no outside service: echo-cancelled microphone audio as Opus, relayed by your server over the same connection the app already uses (at home or through the tunnel). Mute, deafen, talking indicators, and the movie ducks while friends talk. Voice rooms are generic, so future features can use them too. |
+| **Watch** | Movies, shows (seasons/episodes), music (albums, mini-player), home videos. **Up next** finishes the show or album, then picks something random but similar from the same kind of collection. Player with **Auto** (adaptive), **Original** (untouched bitstream) and 4K→360p quality you can switch any time; GPU transcoding (NVENC / Quick Sync / VAAPI) with automatic CPU fallback; segment cache, encode-ahead with throttling, optional pre-transcode; scrub previews; resume; PiP; keyboard shortcuts. Originals are never modified. |
+| **Watch parties** | Watch together with friends and family wherever they are: one shared clock keeps every player in step through play, pause, skips and moving to the next video, waits for anyone who's buffering, and everyone streams in their own quality. Open a party to a whole community (members are told it started), line videos up in a shared **queue**, and the server pre-encodes what's next so everyone starts together. Chat, emoji reactions, invite links. |
+| **Voice chat & calls** | Built into Paddock, no outside service: echo-cancelled Opus audio relayed by your server over the connection the app already uses. Stays on while you move around the app (web, Android, Windows, Linux). **Call** people in your communities (it rings on every device), or drop into a community's always-open **lounge**. Mute, deafen, talking indicators; the movie ducks while friends talk. |
+| **Communities** | Group people (a household, the race team, friends). Libraries are open to everyone or shared with chosen communities (view or change); projects too. Each community can switch comments, watch parties and its voice lounge on or off. **Media-only mode** (per person, or everyone but admins) keeps the app to movies, shows, music, photos and home videos, with parties, calls and comments. Each person can have their own backup folder. |
+| **Comments** | Under videos, photos and files, kept within a community (or open to everyone), pointing at a moment in a video if you like; they arrive live. |
 | **Public links** | Let people outside your home watch one video in any browser, with no account or app: your own domain, a free Let's Encrypt certificate Paddock gets and renews itself, a password per link, expiry, viewer limit, and lockouts against guessing. A separate listener serves only these pages, so nothing else of Paddock is reachable from the internet. |
 | **Live captions** | Local Whisper transcribes just ahead of the playhead on web and Android; finished transcripts make *spoken words searchable*. |
-| **Photos** | Phone backup (resumable, deduplicated, keeps GPS, and the app tells you why something didn't upload), day timeline, “On this day”, places (no map service), full-screen viewer. |
+| **Photos** | Phone backup (resumable, deduplicated, keeps GPS, and the app tells you why something didn't upload), day timeline, “On this day”, places (no map service), and a full-screen viewer you swipe through (or scroll, or use the arrow keys) with pinch zoom and comments. |
 | **RED / cinema** | R3D clips cataloged as one item (all spans), camera/reel/clip from names, RMD look data, REDline metadata & proxies when installed, BRAW, shoot-day clip logs, verified **card offload** with checksums. |
 | **Engineering** | STL/3MF/OBJ/STEP/IGES/SolidWorks/Fusion/FreeCAD/DXF/G-code/KiCad. Server-rendered thumbnails, WebGL 3D viewer, G-code toolpath preview, print stats, STEP header data, **part families** (all revisions + exports), drop-folder **auto-filing**, send G-code to Klipper/OctoPrint, expiring share links. |
-| **Projects** | Gather footage, photos, audio, CAD and notes per build/trip; day-by-day timeline; **AI video plan** (hook, beats, shot list mapped to your clips, missing shots, voice-over, music). |
+| **Projects** | A build, a trip, research, anything: add files straight into it from any app, gather footage, photos, audio, CAD and notes; day-by-day timeline; share it with a community. When it's headed for a video, the **AI video plan** turns the pile into one (hook, beats, shot list mapped to your clips, missing shots, voice-over, music). |
 | **AI** | Built-in assistant with tool calling over your library (read-only unless you allow changes, never deletes). Local by default: **Qwen3.8 27B** via Ollama or vLLM; Claude optional. Auto-tagging/captions from thumbnails. |
 | **MCP** | `https://<paddock>:8443/mcp` — scoped tokens, audit log. Works with OpenClaw, Claude Desktop/Code, Cursor… |
 | **Linked servers** | Pair other Paddock servers or **Paddock Node** (sister app) by invite + safety phrase; **encrypted, deduplicated, incremental backups** with retention, verify and restore; share libraries between servers. |
-| **Admin** | Everything from the web UI: setup, libraries (folder picker), users, devices (QR pairing), remote access (auto router mapping), AI models (download/load/unload, VRAM), transcoding, transcription, printers, linked servers & backups, jobs, sessions, audit log, trash. |
+| **Admin** | Everything from the web UI: setup, libraries (folder picker, network shares on Paddock OS), people and communities, devices by person (QR pairing), remote access (auto router mapping), AI models (download/load/unload, VRAM), transcoding, transcription, printers, linked servers & backups, jobs, sessions, audit log, trash. |
 
 ## Install Paddock OS
 
