@@ -26,6 +26,21 @@ def _party_voice_scope(actor, ref: str) -> bool:
 register_scope("party", _party_voice_scope)
 
 
+def _item_for(user_id: int, item_id: int) -> dict | None:
+    """An item this person may put on screen in a party (they must be able to open it themselves)."""
+    from .. import access
+    from ..actor import for_user
+
+    u = db.q1("SELECT * FROM users WHERE id=?", (user_id,))
+    item = db.q1("SELECT * FROM items WHERE id=? AND trashed_at IS NULL", (item_id,))
+    if not u or not item or item["kind"] not in ("video", "red_clip", "braw_clip", "audio"):
+        return None
+    return item if access.can_read_library(for_user(u), item["library_id"]) else None
+
+
+parties.item_check = _item_for
+
+
 class NewParty(BaseModel):
     item_id: int
     everyone: bool = True
@@ -33,6 +48,7 @@ class NewParty(BaseModel):
     control: str = Field(default="everyone", pattern=r"^(everyone|host)$")
     wait_for_all: bool = True
     position: float = Field(default=0, ge=0)
+    community_id: int | None = None              # open to everyone in this community
 
 
 def _get(pid: str, actor: Actor):
@@ -55,8 +71,24 @@ def create_party(body: NewParty, actor: Actor = Depends(current_actor), _h: Acto
         if not u:
             raise HTTPException(400, f"No account called {name}")
         invited.add(u["id"])
-    p = parties.create(actor.user_id, actor.username, item["id"], item["title"], body.everyone, invited, body.control,
-                       body.wait_for_all, body.position)
+    community = None
+    if body.community_id is not None:
+        community = next((c for c in access.my_communities(actor.user_id, "parties") if c["id"] == body.community_id), None)
+        if not community and not actor.is_admin:
+            raise HTTPException(403, "You can't start a watch party in that community")
+        community = community or db.q1("SELECT id, name FROM communities WHERE id=?", (body.community_id,))
+        if not community:
+            raise HTTPException(404, "No such community")
+    p = parties.create(actor.user_id, actor.username, item["id"], item["title"], body.everyone and not community, invited,
+                       body.control, body.wait_for_all, body.position, community["id"] if community else None,
+                       community["name"] if community else "")
+    # tell the people who can join (the community's members, or those invited) that it's on
+    from ..events import hub
+
+    audience = set(invited)
+    if community:
+        audience |= {r["user_id"] for r in db.q("SELECT user_id FROM community_members WHERE community_id=?", (community["id"],))}
+    hub.send(audience - {actor.user_id}, {"type": "party", "party": p.public()})
     db.audit(actor.audit_name, "party.created", party=p.id, item=item["id"], everyone=body.everyone)
     return p.public() | {"state": p.state()}
 

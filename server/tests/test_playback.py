@@ -222,3 +222,7 @@ def test_up_next_continues_the_show_then_fills(admin):
     assert len(nxt) >= 3 and all(c["kind"] in ("video", "red_clip", "braw_clip") for c in nxt)
     song = item_by_title(admin, "Launch Control")
     assert all(c["kind"] == "audio" for c in admin.get(f"/api/items/{song['id']}/up_next").json())
+    # films and shows lead to films and shows, never to camera-roll clips or footage
+    assert all(c["library_kind"] in ("movies", "shows") for c in nxt)
+    home = item_by_title(admin, "launch-day")
+    assert all(c["library_kind"] in ("home_videos", "photos", "mixed") for c in admin.get(f"/api/items/{home['id']}/up_next").json())

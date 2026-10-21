@@ -26,6 +26,7 @@ def overview(actor: Actor = Depends(require_admin)):
     status = tools.TOOLS["server_status"].fn(actor, {})
     return {
         "media_only_everyone": bool(db.get_setting("media_only_everyone", False)),
+        "comments_everyone": bool(db.get_setting("comments_everyone", True)),
         "server": {"name": server_name(), "version": __version__, "data_dir": str(settings.data_dir),
                    "media_roots": [str(r) for r in settings.media_roots]},
         "status": status,
@@ -87,6 +88,7 @@ class GeneralBody(BaseModel):
     server_name: str | None = Field(default=None, max_length=60)
     lan_urls: list[str] | None = None
     media_only_everyone: bool | None = None       # everyone who isn't an admin gets the media-only app
+    comments_everyone: bool | None = None         # comments anyone on the server can see (besides community ones)
 
 
 @router.put("/admin/general")
@@ -98,6 +100,8 @@ def general(body: GeneralBody, actor: Actor = Depends(require_admin), _h: Actor 
         db.set_setting("lan_urls", urls or None)
     if body.media_only_everyone is not None:
         db.set_setting("media_only_everyone", body.media_only_everyone)
+    if body.comments_everyone is not None:
+        db.set_setting("comments_everyone", body.comments_everyone)
     db.audit(actor.audit_name, "settings.general", **body.model_dump(exclude_none=True))
     return {"ok": True}
 

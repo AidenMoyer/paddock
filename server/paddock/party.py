@@ -9,8 +9,10 @@ streams the media itself (its own quality, its own connection) and nudges its pl
 (see web/static/js/party.js and the Android PartySession). Play / pause / seek / switching titles update the
 clock and are broadcast. If anyone is buffering, the party waits for them ("hold") and resumes together.
 
-Parties live in memory: they're for now, not for later. A party is private to the people it was shared with
-(or everyone on this server), and voice for a party is the voice room "party:<id>" (see voice.py).
+Parties live in memory: they're for now, not for later. A party belongs to a community (every member can see
+and join it), to the people it was shared with, or to everyone on this server. Voice for a party is the voice
+room "party:<id>" (see voice.py). Anyone in the party can add to its queue; when a video ends the party moves
+on to the next one in the queue together.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import asyncio
 import json
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 MAX_CHAT = 200
@@ -26,6 +29,7 @@ HOLD_LIMIT = 15.0          # never wait more than this for a buffering member
 START_LEAD = 0.35          # start slightly in the future so everyone begins together
 SWITCH_LOAD = 2.5          # extra time to open the next video before a party moves on together
 REACTIONS = {"😂", "❤️", "😮", "👏", "😢", "🔥", "👀", "🎉"}
+MAX_QUEUE = 100
 
 
 @dataclass
@@ -47,6 +51,9 @@ class Party:
     title: str
     everyone: bool = True                       # anyone with an account on this server may join
     invited: set[int] = field(default_factory=set)
+    community_id: int | None = None              # every member of this community may join
+    community: str = ""
+    queue: list[dict] = field(default_factory=list)   # [{item_id, title, by}] plays next, in order
     control: str = "everyone"                   # everyone | host
     wait_for_all: bool = True
     created: float = field(default_factory=time.time)
@@ -76,6 +83,7 @@ class Party:
     def public(self) -> dict:
         return {"id": self.id, "host": self.host_name, "host_id": self.host_id, "item_id": self.item_id,
                 "title": self.title, "everyone": self.everyone, "control": self.control, "wait_for_all": self.wait_for_all,
+                "community_id": self.community_id, "community": self.community, "queue": self.queue,
                 "created": self.created, "members": self.member_list()}
 
     def member_list(self) -> list[dict]:
@@ -88,7 +96,13 @@ class Party:
         return list(seen.values())
 
     def may_join(self, user_id: int, is_admin: bool) -> bool:
-        return self.everyone or user_id == self.host_id or user_id in self.invited or is_admin
+        if user_id == self.host_id or user_id in self.invited or is_admin:
+            return True
+        if self.community_id is not None:
+            from . import access
+
+            return access.is_member(user_id, self.community_id)
+        return self.everyone
 
     def may_control(self, user_id: int) -> bool:
         return self.control == "everyone" or user_id == self.host_id
@@ -98,6 +112,8 @@ class Parties:
     def __init__(self):
         self.parties: dict[str, Party] = {}
         self.lock = asyncio.Lock()
+        # may this person put this item on screen for everyone? (set by the API: library access)
+        self.item_check: Callable[[int, int], dict | None] = lambda user_id, item_id: None
 
     def new_id(self) -> str:
         alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"     # no 0/O/1/I: easy to read out loud
@@ -107,10 +123,11 @@ class Parties:
                 return pid
 
     def create(self, host_id: int, host_name: str, item_id: int, title: str, everyone: bool, invited: set[int],
-               control: str, wait_for_all: bool, position: float = 0.0) -> Party:
+               control: str, wait_for_all: bool, position: float = 0.0, community_id: int | None = None,
+               community: str = "") -> Party:
         p = Party(id=self.new_id(), host_id=host_id, host_name=host_name, item_id=item_id, title=title, everyone=everyone,
                   invited=invited, control=control if control in ("everyone", "host") else "everyone",
-                  wait_for_all=wait_for_all, position=max(position, 0.0))
+                  wait_for_all=wait_for_all, position=max(position, 0.0), community_id=community_id, community=community)
         self.parties[p.id] = p
         return p
 
@@ -166,6 +183,36 @@ class Parties:
             if emoji in REACTIONS:
                 self.send(p, {"type": "reaction", "user": m.username, "emoji": emoji, "ts": now})
             return None
+        if kind == "queue_add":
+            item = self.item_check(m.user_id, msg.get("item_id")) if isinstance(msg.get("item_id"), int) else None
+            if not item:
+                return {"type": "error", "error": "You can't add that"}
+            if len(p.queue) >= MAX_QUEUE:
+                return {"type": "error", "error": "The queue is full"}
+            p.queue.append({"item_id": item["id"], "title": item["title"], "by": m.username})
+            self.send(p, {"type": "queue", "queue": p.queue, "by": m.username, "action": "add", "title": item["title"]})
+            return None
+        if kind == "queue_remove":
+            i = msg.get("index")
+            if not isinstance(i, int) or not 0 <= i < len(p.queue):
+                return {"type": "error", "error": "Not in the queue"}
+            if p.queue[i]["by"] != m.username and not p.may_control(m.user_id):
+                return {"type": "error", "error": "Only the person who added it can remove it"}
+            p.queue.pop(i)
+            self.send(p, {"type": "queue", "queue": p.queue, "by": m.username, "action": "remove"})
+            return None
+        if kind == "next":
+            # the video ended (or someone pressed Next): move on to the queue's first item, together
+            if not p.may_control(m.user_id):
+                return {"type": "error", "error": f"Only {p.host_name} controls this party"}
+            if msg.get("from") is not None and msg.get("from") != p.item_id:
+                return None              # several members finished at once: only the first one counts
+            if not p.queue:
+                return {"type": "queue_empty"}
+            nxt = p.queue.pop(0)
+            msg = {"type": "item", "item_id": nxt["item_id"], "title": nxt["title"], "play": True}
+            kind = "item"
+            self.send(p, {"type": "queue", "queue": p.queue, "action": "next"})
         if kind in ("play", "pause", "seek", "item", "rate"):
             if not p.may_control(m.user_id):
                 return {"type": "error", "error": f"Only {p.host_name} controls this party"}
@@ -184,7 +231,7 @@ class Parties:
             elif kind == "item":
                 item = msg.get("item_id")
                 title = msg.get("title")
-                if not isinstance(item, int):
+                if not isinstance(item, int) or not self.item_check(m.user_id, item):
                     return {"type": "error", "error": "Bad item"}
                 p.item_id, p.title = item, str(title or p.title)[:200]
                 # "play": keep the party going (autoplay / Next): start once everyone has had time to load

@@ -156,27 +156,12 @@ def item_detail(item_id: int, actor: Actor = Depends(current_actor)):
 
 @router.get("/items/{item_id}/up_next")
 def up_next(item_id: int, limit: int = Query(30, le=100), actor: Actor = Depends(current_actor)):
-    """YouTube-style "Up next": the rest of this show/album/shoot first, then more from the same
-    library, then other recent videos. Never repeats the current item."""
+    """What plays next: the rest of the show or album, then a random pick of similar things from the same kind
+    of collection (movies lead to movies, songs to songs; see recommend.py). Videos and songs only."""
+    from .. import recommend
+
     item = _item_or_404(item_id, actor)
-    kinds_ = ["audio"] if item["kind"] == "audio" else ["video", "red_clip", "braw_clip"]
-    out: list[dict] = []
-    seen = {item_id}
-
-    def add(cards: list[dict]) -> None:
-        for c in cards:
-            if c["id"] not in seen and c["kind"] in kinds_:
-                seen.add(c["id"])
-                out.append(c)
-
-    allowed = access.library_ids(actor)
-    if item["group_key"]:
-        sibs = catalog.search(group=item["group_key"], sort="group", limit=300, allowed=allowed)
-        idx = next((i for i, c in enumerate(sibs) if c["id"] == item_id), -1)
-        add(sibs[idx + 1:] + sibs[:max(idx, 0)])
-    add(catalog.search(library_id=item["library_id"], kind=kinds_, sort="newest", limit=80, allowed=allowed))
-    if len(out) < limit:
-        add(catalog.search(kind=kinds_, sort="added", limit=80, allowed=allowed))
+    out = recommend.up_next(item, actor.user_id, access.library_ids(actor), limit)
     prog = {r["item_id"]: r for r in db.q(
         f"SELECT item_id, position, completed FROM progress WHERE user_id=? AND item_id IN ({','.join('?' * len(out)) or 'NULL'})",
         (actor.user_id, *[c["id"] for c in out]))}

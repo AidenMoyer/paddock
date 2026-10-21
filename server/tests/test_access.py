@@ -163,3 +163,36 @@ def test_calls_ring_people_in_your_communities(admin, people):
         assert pal.delete(f"/api/calls/{call['id']}").status_code == 403
         assert kid.delete(f"/api/calls/{call['id']}").status_code == 200
         assert json.loads(ev.receive_text())["type"] == "call_ended"
+
+
+def test_community_watch_party_with_a_queue(admin, people):
+    kid, pal, libs = people
+    fam = next(c for c in admin.get("/api/communities").json() if c["name"] == "Family")
+    admin.put(f"/api/communities/{fam['id']}/members", json={"members": [{"user_id": kid.user_id}]})
+    movies = sorted(ids(admin, library_id=libs["movies"]["id"]))
+    with kid.websocket_connect("/api/events/ws") as ev:
+        json.loads(ev.receive_text())
+        r = admin.post("/api/parties", json={"item_id": movies[0], "community_id": fam["id"]})
+        assert r.status_code == 200, r.text
+        party = r.json()
+        note = json.loads(ev.receive_text())
+        assert note["type"] == "party" and note["party"]["community"] == "Family"
+    assert party["id"] in [p["id"] for p in kid.get("/api/parties").json()]
+    assert party["id"] not in [p["id"] for p in pal.get("/api/parties").json()]      # pal isn't in Family
+    assert pal.get(f"/api/parties/{party['id']}").status_code == 404
+    with kid.websocket_connect(f"/api/parties/{party['id']}/ws") as ws:
+        hello = json.loads(ws.receive_text())
+        assert hello["party"]["queue"] == []
+        ws.send_text(json.dumps({"type": "queue_add", "item_id": movies[1]}))
+        while (msg := json.loads(ws.receive_text()))["type"] != "queue":
+            pass
+        assert [q["item_id"] for q in msg["queue"]] == [movies[1]] and msg["by"] == "junior"
+        ws.send_text(json.dumps({"type": "next", "from": movies[0]}))
+        while (msg := json.loads(ws.receive_text()))["type"] != "state":
+            pass
+        assert msg["state"]["item_id"] == movies[1] and msg["state"]["intent_playing"] is True
+        ws.send_text(json.dumps({"type": "next", "from": movies[1]}))
+        while (msg := json.loads(ws.receive_text()))["type"] not in ("queue_empty", "error"):
+            pass
+        assert msg["type"] == "queue_empty"
+    admin.delete(f"/api/parties/{party['id']}")
