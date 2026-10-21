@@ -6,6 +6,7 @@ import app.paddock.live.PartyClock
 import app.paddock.live.PartyInfo
 import app.paddock.live.PartyMember
 import app.paddock.live.PartyState
+import app.paddock.live.QueueEntry
 import app.paddock.live.Reaction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +43,8 @@ class PartyClient(val id: String, private val player: VideoPlayer, private var i
     val ended = MutableStateFlow<String?>(null)
     val switchTo = MutableStateFlow<Int?>(null)
     val canControl = MutableStateFlow(true)
+    val queue = MutableStateFlow<List<QueueEntry>>(emptyList())
+    private var fallback: Pair<Int, String>? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val clock = PartyClock()
@@ -92,6 +95,7 @@ class PartyClient(val id: String, private val player: VideoPlayer, private var i
                 val p = PaddockJson.decodeFromJsonElement<PartyInfo>(msg["party"]!!)
                 info.value = p
                 members.value = p.members
+                queue.value = p.queue
                 chat.value = (msg["chat"] as? JsonArray)?.map { line(it.jsonObject) } ?: emptyList()
                 status.value = ""
                 apply(PaddockJson.decodeFromJsonElement(msg["state"]!!), null, null)
@@ -105,6 +109,13 @@ class PartyClient(val id: String, private val player: VideoPlayer, private var i
                 scope.launch { delay(2600); reactions.value = reactions.value - r }
             }
             "error" -> status.value = msg["error"]?.jsonPrimitive?.content ?: ""
+            "queue" -> {
+                queue.value = PaddockJson.decodeFromJsonElement(msg["queue"]!!)
+                val by = msg["by"]?.jsonPrimitive?.content
+                if (msg["action"]?.jsonPrimitive?.content == "add" && by != null && by != myName)
+                    chat.value = (chat.value + ChatLine(null, "$by queued ${msg["title"]?.jsonPrimitive?.content ?: "a video"}")).takeLast(60)
+            }
+            "queue_empty" -> { fallback?.let { (item, title) -> switchItem(item, title) }; fallback = null }
             "ended" -> ended.value = "The host ended the watch party."
         }
     }
@@ -161,6 +172,13 @@ class PartyClient(val id: String, private val player: VideoPlayer, private var i
     fun react(emoji: String) = send("reaction") { put("emoji", emoji) }
     fun switchItem(item: Int, title: String) = send("item") { put("item_id", item); put("title", title); put("play", true) }
     fun followItem(item: Int) { itemId = item; switchTo.value = null }
+    /** Move on together: the party's queue first, or this computer's own up-next pick when it's empty. */
+    fun next(fromItem: Int, fallbackItem: Int?, fallbackTitle: String) {
+        fallback = fallbackItem?.let { it to fallbackTitle }
+        send("next") { put("from", fromItem) }
+    }
+    fun queueAdd(item: Int) = send("queue_add") { put("item_id", item) }
+    fun queueRemove(index: Int) = send("queue_remove") { put("index", index) }
 
     fun close() {
         closed = true

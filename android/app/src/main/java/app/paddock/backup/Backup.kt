@@ -37,7 +37,59 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
+/**
+ * What happened to backups, in plain words, so nothing fails quietly: the current state ("Waiting for your home
+ * Wi-Fi", "Backed up 12 photos") and the files that didn't make it with the server's reason. Shown under You →
+ * Photo backup; problems also raise a notification.
+ */
+object BackupReport {
+    data class Problem(val name: String, val reason: String, val at: Long)
+
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences("backup-report", Context.MODE_PRIVATE)
+
+    fun status(ctx: Context): Pair<String, Long> = prefs(ctx).let { (it.getString("status", "") ?: "") to it.getLong("status_at", 0) }
+
+    fun setStatus(ctx: Context, text: String) {
+        prefs(ctx).edit().putString("status", text).putLong("status_at", System.currentTimeMillis()).apply()
+    }
+
+    fun problems(ctx: Context): List<Problem> = runCatching {
+        val arr = org.json.JSONArray(prefs(ctx).getString("problems", "[]"))
+        (0 until arr.length()).map { i -> arr.getJSONObject(i).let { Problem(it.getString("name"), it.getString("reason"), it.getLong("at")) } }
+    }.getOrDefault(emptyList())
+
+    @Synchronized fun failed(ctx: Context, name: String, reason: String) {
+        val list = (problems(ctx).filter { it.name != name } + Problem(name, reason, System.currentTimeMillis())).takeLast(50)
+        val arr = org.json.JSONArray()
+        list.forEach { arr.put(org.json.JSONObject().put("name", it.name).put("reason", it.reason).put("at", it.at)) }
+        prefs(ctx).edit().putString("problems", arr.toString()).apply()
+    }
+
+    fun clear(ctx: Context) { prefs(ctx).edit().remove("problems").apply() }
+
+    /** Tell the person, once per kind of problem, without nagging. */
+    fun notify(ctx: Context, title: String, text: String) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        val pi = android.app.PendingIntent.getActivity(ctx, 43, android.content.Intent(ctx, app.paddock.MainActivity::class.java).putExtra("open", "backup"),
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
+        val n = NotificationCompat.Builder(ctx, Backup.PROBLEMS).setSmallIcon(R.drawable.ic_launcher).setContentTitle(title)
+            .setContentText(text).setStyle(NotificationCompat.BigTextStyle().bigText(text)).setAutoCancel(true).setContentIntent(pi).build()
+        ctx.getSystemService(android.app.NotificationManager::class.java).notify(43, n)
+    }
+
+    /** The server's own words when it gave them, else what probably happened. */
+    fun reason(e: Throwable): String = when {
+        e is app.paddock.net.ApiException && e.message?.isNotBlank() == true -> e.message!!
+        e is java.io.FileNotFoundException || e is SecurityException -> "The phone wouldn't let Paddock read this file"
+        e is java.net.SocketTimeoutException -> "The server took too long to answer"
+        e is java.io.IOException -> "The connection to the server dropped"
+        else -> e.message ?: "Something went wrong"
+    }
+}
+
 object Backup {
+    const val PROBLEMS = "backup-problems"
     const val CHANNEL = "backup"
     private const val PERIODIC = "paddock-backup"
     private const val NOW = "paddock-backup-now"
@@ -88,31 +140,78 @@ class BackupWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
     data class Media(val id: Long, val uri: Uri, val name: String, val size: Long, val taken: Long, val added: Long, val video: Boolean)
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        val ctx = applicationContext
         if (!app.settings.backupEnabled || app.servers.active == null) return@withContext Result.success()
         app.conn.ensure()
         val mode = app.conn.state.value.mode
-        if (mode == Mode.Tunnel && !app.settings.backupRemote) return@withContext Result.success()  // wait until home
-        if (mode != Mode.Home && mode != Mode.Tunnel) return@withContext Result.retry()
+        val server = app.servers.active?.name ?: "your server"
+        if (mode == Mode.Tunnel && !app.settings.backupRemote) {      // wait until home
+            BackupReport.setStatus(ctx, "Waiting for your home network (backing up away from home is off)")
+            return@withContext Result.success()
+        }
+        if (mode != Mode.Home && mode != Mode.Tunnel) {
+            BackupReport.setStatus(ctx, "Can't reach $server right now. Paddock will try again.")
+            return@withContext Result.retry()
+        }
+        if (!allowed()) {
+            BackupReport.setStatus(ctx, "Paddock isn't allowed to see your photos. Turn on photo access for Paddock in Android settings.")
+            BackupReport.notify(ctx, "Photos aren't backing up", "Paddock isn't allowed to see your photos. Open Paddock → You → Photo backup.")
+            return@withContext Result.success()
+        }
 
         val pending = scan()
-        if (pending.isEmpty()) return@withContext Result.success()
+        if (pending.isEmpty()) {
+            BackupReport.setStatus(ctx, "Everything's backed up to $server")
+            return@withContext Result.success()
+        }
         runCatching { setForeground(foreground(0, pending.size)) }
         var done = 0
-        for (batch in pending.chunked(50)) {
-            val hashed = batch.mapNotNull { m -> runCatching { m to sha256(m.uri) }.getOrNull() }
-            val have = app.api.post<HaveResponse>("/api/uploads/check", buildJsonObject {
-                put("sha256", JsonArray(hashed.map { JsonPrimitive(it.second) }))
-            }).have.toSet()
-            for ((m, hash) in hashed) {
-                if (isStopped) return@withContext Result.retry()
-                if (hash !in have) upload(m, hash)
-                markDone(m)
-                done++
-                runCatching { setForeground(foreground(done, pending.size)) }
+        var failed = 0
+        try {
+            for (batch in pending.chunked(50)) {
+                val hashed = batch.mapNotNull { m ->
+                    runCatching { m to sha256(m.uri) }.onFailure { BackupReport.failed(ctx, m.name, BackupReport.reason(it)); failed++ }.getOrNull()
+                }
+                val have = app.api.post<HaveResponse>("/api/uploads/check", buildJsonObject {
+                    put("sha256", JsonArray(hashed.map { JsonPrimitive(it.second) }))
+                }).have.toSet()
+                for ((m, hash) in hashed) {
+                    if (isStopped) return@withContext Result.retry()
+                    try {
+                        if (hash !in have) upload(m, hash)
+                        markDone(m)
+                        done++
+                    } catch (e: app.paddock.net.ApiException) {
+                        failed++
+                        BackupReport.failed(ctx, m.name, BackupReport.reason(e))
+                        when (e.code) {
+                            415 -> markDone(m)                 // a type the server doesn't keep: don't try forever
+                            403, 404, 409, 503, 507 -> {       // a problem on the server's side that every file would hit
+                                BackupReport.setStatus(ctx, "Backup paused: ${BackupReport.reason(e)}")
+                                BackupReport.notify(ctx, "Photos aren't backing up", BackupReport.reason(e))
+                                return@withContext Result.success()
+                            }
+                        }
+                    }
+                    runCatching { setForeground(foreground(done + failed, pending.size)) }
+                }
             }
+        } catch (e: java.io.IOException) {
+            BackupReport.setStatus(ctx, "The connection dropped after $done files. Paddock will carry on when it can.")
+            return@withContext Result.retry()
         }
         prefs.edit().putLong("last_run", System.currentTimeMillis()).putInt("last_count", done).apply()
+        BackupReport.setStatus(ctx, if (failed == 0) "Backed up $done ${if (done == 1) "file" else "files"} to $server"
+            else "Backed up $done, but $failed didn't go. See below for why.")
+        if (failed > 0) BackupReport.notify(ctx, "$failed ${if (failed == 1) "file" else "files"} didn't back up", "Open Paddock → You → Photo backup to see why.")
         Result.success()
+    }
+
+    private fun allowed(): Boolean {
+        val ctx = applicationContext
+        return Backup.permissions().filter { it != Manifest.permission.ACCESS_MEDIA_LOCATION && it != "android.permission.READ_MEDIA_VISUAL_USER_SELECTED" }
+            .any { ContextCompat.checkSelfPermission(ctx, it) == PackageManager.PERMISSION_GRANTED } ||
+            (Build.VERSION.SDK_INT >= 34 && ContextCompat.checkSelfPermission(ctx, "android.permission.READ_MEDIA_VISUAL_USER_SELECTED") == PackageManager.PERMISSION_GRANTED)
     }
 
     private fun scan(): List<Media> {
@@ -187,10 +286,11 @@ object Transfer {
         return md.digest().joinToString("") { "%02x".format(it) }
     }
 
-    suspend fun upload(ctx: Context, uri: Uri, name: String, size: Long, takenMs: Long, hash: String) {
+    suspend fun upload(ctx: Context, uri: Uri, name: String, size: Long, takenMs: Long, hash: String, projectId: Int? = null) {
         val app = PaddockApp.instance
         val start = app.api.post<UploadStart>("/api/uploads", buildJsonObject {
             put("filename", name); put("size", size); put("sha256", hash); put("taken_at", takenMs / 1000.0)
+            if (projectId != null) put("project_id", projectId)
         })
         if (start.status == "duplicate") return
         val id = start.upload_id!!
@@ -218,10 +318,11 @@ object Transfer {
 
 /** Files picked with the "+" button: same resumable, verified upload, run in the background. */
 object ManualUpload {
-    fun enqueue(ctx: Context, uris: List<Uri>) {
+    /** Upload files picked on the phone, into the person's library or straight into a project. */
+    fun enqueue(ctx: Context, uris: List<Uri>, projectId: Int? = null) {
         uris.forEach { runCatching { ctx.contentResolver.takePersistableUriPermission(it, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
         val req = OneTimeWorkRequestBuilder<ManualUploadWorker>()
-            .setInputData(androidx.work.workDataOf("uris" to uris.map { it.toString() }.toTypedArray()))
+            .setInputData(androidx.work.workDataOf("uris" to uris.map { it.toString() }.toTypedArray(), "project" to (projectId ?: 0)))
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .build()
         WorkManager.getInstance(ctx).enqueue(req)
@@ -230,19 +331,32 @@ object ManualUpload {
 
 class ManualUploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        val ctx = applicationContext
         val uris = inputData.getStringArray("uris")?.map { Uri.parse(it) } ?: return@withContext Result.success()
-        PaddockApp.instance.conn.ensure() ?: return@withContext Result.retry()
+        val project = inputData.getInt("project", 0).takeIf { it > 0 }
+        if (PaddockApp.instance.conn.ensure() == null) {
+            BackupReport.setStatus(ctx, "Waiting to reach your server to upload ${uris.size} files")
+            return@withContext Result.retry()
+        }
+        val failed = mutableListOf<String>()
         for (uri in uris) {
             var name = "upload"; var size = 0L
-            applicationContext.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME, android.provider.OpenableColumns.SIZE), null, null, null)?.use {
+            ctx.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME, android.provider.OpenableColumns.SIZE), null, null, null)?.use {
                 if (it.moveToFirst()) { name = it.getString(0) ?: name; size = it.getLong(1) }
             }
             try {
-                Transfer.upload(applicationContext, uri, name, size, System.currentTimeMillis(), Transfer.sha256(applicationContext, uri))
+                Transfer.upload(ctx, uri, name, size, System.currentTimeMillis(), Transfer.sha256(ctx, uri), project)
+            } catch (e: app.paddock.net.ApiException) {
+                BackupReport.failed(ctx, name, BackupReport.reason(e)); failed += name     // the server said no: retrying won't help
+            } catch (e: java.io.IOException) {
+                if (runAttemptCount < 5) return@withContext Result.retry()                  // the connection dropped: resume later
+                BackupReport.failed(ctx, name, BackupReport.reason(e)); failed += name
             } catch (e: Exception) {
-                return@withContext Result.retry()
+                BackupReport.failed(ctx, name, BackupReport.reason(e)); failed += name
             }
         }
+        if (failed.isNotEmpty()) BackupReport.notify(ctx, if (failed.size == 1) "${failed[0]} didn't upload" else "${failed.size} files didn't upload",
+            BackupReport.problems(ctx).lastOrNull()?.reason ?: "Open Paddock → You to see why.")
         Result.success()
     }
 }

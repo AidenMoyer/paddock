@@ -3,6 +3,8 @@ package app.paddock.desktop
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -92,9 +94,8 @@ fun WatchScreen(id: Int, partyId: String?) {
     }
     player.onEnded = {
         val next = upNext.firstOrNull()
-        if (next != null && settings.settings.autoplay) {
-            if (party != null) party?.switchItem(next.id, next.title) else itemId = next.id
-        }
+        if (party != null) party?.next(itemId, next?.id, next?.title ?: "")          // the party's queue first
+        else if (next != null && settings.settings.autoplay) itemId = next.id
     }
     DisposableEffect(Unit) { onDispose { player.dispose(); if (Nav.fullscreen.value) Nav.fullscreen.value = false } }
 
@@ -112,14 +113,20 @@ fun WatchScreen(id: Int, partyId: String?) {
             if (!full) {
                 val e = err
                 if (e != null) Text(e, color = p.danger, modifier = Modifier.padding(top = 8.dp))
-                item?.let { i -> Details(i, player, party, partyId, scope) }
+                item?.let { i ->
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
+                        Details(i, player, party, partyId, scope)
+                        CommentsPanel(i.id, position = { player.position.value }, onSeek = { t -> player.seek(t); party?.userSeek(t) })
+                    }
+                }
             }
         }
         if (!full) {
             Spacer(Modifier.width(24.dp))
             Column(Modifier.width(380.dp)) {
                 val pc = party
-                if (pc != null) PartyPanel(pc, Modifier.weight(1f)) else UpNext(upNext)
+                if (pc != null) PartyPanel(pc, Modifier.weight(1f))
+                UpNext(upNext, pc)
             }
         }
     }
@@ -225,7 +232,7 @@ private fun Details(item: Item, player: VideoPlayer, party: PartyClient?, partyI
 }
 
 @Composable
-private fun UpNext(list: List<Item>) {
+private fun UpNext(list: List<Item>, party: PartyClient?) {
     val p = LocalPaddock.current
     Text("Up next", style = MaterialTheme.typography.titleMedium, color = p.text, modifier = Modifier.padding(bottom = 8.dp))
     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -237,9 +244,10 @@ private fun UpNext(list: List<Item>) {
                         modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp).background(Color(0xCC000000)).padding(horizontal = 3.dp))
                 }
                 Spacer(Modifier.width(10.dp))
-                Column {
+                Column(Modifier.weight(1f)) {
                     Text(i.title, color = p.text, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 14.sp)
                     Text(i.library ?: "", color = p.text2, fontSize = 12.sp, maxLines = 1)
+                    if (party != null) TextButton(onClick = { party.queueAdd(i.id) }, contentPadding = PaddingValues(0.dp)) { Text("+ Party queue", color = p.link, fontSize = 12.sp) }
                 }
             }
         }
@@ -269,6 +277,17 @@ private fun PartyPanel(pc: PartyClient, modifier: Modifier) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Avatar(m.username, 34, ring = talking)
                     Text(m.username + if (m.buffering) " ⏳" else "", color = p.text2, fontSize = 11.sp, maxLines = 1)
+                }
+            }
+        }
+        val q by pc.queue.collectAsState()
+        if (q.isNotEmpty()) {
+            Text("Up next in the party · ${q.size}", color = p.text, fontWeight = FontWeight.Medium, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
+            q.forEachIndexed { idx, e ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${idx + 1}  ${e.title}", color = p.text, fontSize = 13.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(e.by, color = p.text3, fontSize = 12.sp)
+                    IconButton(onClick = { pc.queueRemove(idx) }, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.Close, "Remove", tint = p.text3, modifier = Modifier.size(14.dp)) }
                 }
             }
         }

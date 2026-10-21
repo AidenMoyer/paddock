@@ -48,6 +48,9 @@ import app.paddock.data.Item
 import app.paddock.data.LiveCaptions
 import app.paddock.data.Playback
 import app.paddock.data.Quality
+import app.paddock.live.CommentsSection
+import app.paddock.live.rememberJoinVoice
+import app.paddock.live.VoiceHub
 import app.paddock.live.PartyInfo
 import app.paddock.live.PartyPanel
 import app.paddock.live.PartySession
@@ -131,16 +134,15 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
 
     // ---- watch party: the shared clock decides play/pause; voice is optional
     val party = remember(id, partyId) { partyId?.let { PartySession(it, player, id) } }
-    var voice by remember(partyId) { mutableStateOf<VoiceSession?>(null) }
+    // party voice is the app-wide voice room "party:<id>": it keeps going if you leave this screen
+    val voice = VoiceHub.session.value?.takeIf { partyId != null && VoiceHub.inRoom("party:$partyId") }
     var showTogether by remember { mutableStateOf(false) }
-    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted && partyId != null) voice = VoiceSession("party:$partyId").also { it.start() }
-        else if (!granted) android.widget.Toast.makeText(ctx, "Voice needs the microphone permission", android.widget.Toast.LENGTH_SHORT).show()
-    }
+    val joinVoice = rememberJoinVoice()
     DisposableEffect(party) { party?.start(); onDispose { party?.close() } }
-    DisposableEffect(partyId) { onDispose { voice?.stop(); player.volume = 1f } }
+    DisposableEffect(partyId) { onDispose { player.volume = 1f } }
     LaunchedEffect(voice) {          // lower the movie while friends talk
-        while (isActive && voice != null) { player.volume = if (voice?.othersSpeaking() == true) 0.45f else 1f; delay(200) }
+        while (isActive && voice != null) { player.volume = if (voice.othersSpeaking()) 0.45f else 1f; delay(200) }
+        player.volume = 1f
     }
     val switchTo = party?.switchTo?.value
     LaunchedEffect(switchTo) { if (switchTo != null && switchTo != id) { nav.back(); nav.go("watch/$switchTo?party=$partyId") } }
@@ -148,12 +150,14 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
     LaunchedEffect(ended) {
         if (ended != null) {
             android.widget.Toast.makeText(ctx, ended, android.widget.Toast.LENGTH_SHORT).show()
-            voice?.stop(); voice = null; nav.back(); nav.go("watch/$id")
+            if (VoiceHub.inRoom("party:$partyId")) VoiceHub.leave()
+            nav.back(); nav.go("watch/$id")
         }
     }
     fun playNext() {
-        val n = next() ?: return
-        if (party != null) { if (party.canControl.value) party.switchItem(n.id, n.title) } else nav.replace(n)
+        val n = next()
+        // in a party: the party's queue first, then this phone's own pick
+        if (party != null) { if (party.canControl.value) party.next(id, n?.id, n?.title ?: "") } else if (n != null) nav.replace(n)
     }
 
     fun applyCaptions() {
@@ -290,11 +294,12 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
                         }
                     } else Spacer(Modifier.height(12.dp))
                     if (party != null) PartyPanel(party, voice,
-                        onJoinVoice = { micPermission.launch(Manifest.permission.RECORD_AUDIO) },
-                        onLeaveVoice = { voice?.stop(); voice = null; player.volume = 1f },
+                        onJoinVoice = { joinVoice("party:$partyId", "Watch party") },
+                        onLeaveVoice = { VoiceHub.leave(); player.volume = 1f },
                         onLeave = { nav.back(); nav.go("watch/$id") },
                         onEnd = { scope.launch { runCatching { api.delete("/api/parties/$partyId") } } })
                     Details(item)
+                    CommentsSection(id, position = { player.currentPosition / 1000.0 }, onSeek = { player.seekTo((it * 1000).toLong()) })
                 }
                 if (queue.any { it.id != id }) {
                     item { QueuePanel(queue.filter { it.id != id }, onOpen = { nav.replace(it) }, onRemove = { r -> queue.removeAll { it.id == r.id } }, onClear = { queue.clear() }) }
@@ -308,7 +313,14 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
                     }
                 }
                 items(upNext, key = { it.id }) { r ->
-                    Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) { VideoCard(r) { nav.replace(r) } }
+                    Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        VideoCard(r) { nav.replace(r) }
+                        // in a watch party, anything can go on the party's queue
+                        if (party != null) FilledTonalButton(onClick = {
+                            party.queueAdd(r.id)
+                            android.widget.Toast.makeText(ctx, "Added to the party's queue", android.widget.Toast.LENGTH_SHORT).show()
+                        }, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp)) { Icon(Icons.Filled.QueueMusic, null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Queue") }
+                    }
                 }
                 if (upNext.isEmpty()) item { Text("Nothing else to play yet.", color = p.text3, modifier = Modifier.padding(16.dp)) }
                 item { Spacer(Modifier.height(24.dp)) }
@@ -317,12 +329,13 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
     }
 
     if (showTogether) {
-        WatchTogetherDialog(onDismiss = { showTogether = false }, onStart = { everyone, hostOnly, wait ->
+        WatchTogetherDialog(onDismiss = { showTogether = false }, onStart = { everyone, hostOnly, wait, community ->
             showTogether = false
             scope.launch {
                 runCatching {
                     api.post<PartyInfo>("/api/parties", buildJsonObject {
                         put("item_id", id); put("everyone", everyone); put("control", if (hostOnly) "host" else "everyone")
+                        if (community != null) put("community_id", community)
                         put("wait_for_all", wait); put("position", player.currentPosition / 1000.0)
                     })
                 }.onSuccess { p -> nav.back(); nav.go("watch/$id?party=${p.id}") }

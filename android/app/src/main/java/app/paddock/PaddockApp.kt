@@ -4,7 +4,10 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import app.paddock.backup.Backup
+import app.paddock.data.AuthState
 import app.paddock.data.Library
+import app.paddock.data.User
+import app.paddock.live.Live
 import app.paddock.data.ServerStore
 import app.paddock.data.Settings
 import app.paddock.net.Api
@@ -33,6 +36,8 @@ class PaddockApp : Application(), ImageLoaderFactory {
     lateinit var api: Api
     lateinit var players: Players
     val libraries = MutableStateFlow<List<Library>>(emptyList())
+    /** This person on the active server, refreshed on every connect (media-only mode, communities...). */
+    val me = MutableStateFlow<User?>(null)
     val theme = MutableStateFlow("system")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -49,6 +54,13 @@ class PaddockApp : Application(), ImageLoaderFactory {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(Backup.CHANNEL, getString(R.string.backup_channel), NotificationManager.IMPORTANCE_LOW)
         )
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(Live.CHANNEL, "Calls and watch parties", NotificationManager.IMPORTANCE_HIGH)
+        )
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(Backup.PROBLEMS, "Backup problems", NotificationManager.IMPORTANCE_DEFAULT)
+        )
+        me.value = servers.active?.user
         scope.launch {
             servers.activeId.collectLatest {
                 conn.use(servers.active)
@@ -57,7 +69,10 @@ class PaddockApp : Application(), ImageLoaderFactory {
         }
         scope.launch {
             conn.state.collectLatest { st ->
-                if (st.mode == Mode.Home || st.mode == Mode.Tunnel) {
+                val online = st.mode == Mode.Home || st.mode == Mode.Tunnel
+                Live.follow(if (online) st.baseUrl else null)
+                if (online) {
+                    runCatching { api.get<AuthState>("/api/auth/state").user?.let { me.value = it } }
                     runCatching { libraries.value = api.get<List<Library>>("/api/libraries") }
                     Updater.check(this@PaddockApp)
                 }

@@ -48,7 +48,8 @@ fun PartyPanel(party: PartySession, voice: VoiceSession?, onJoinVoice: () -> Uni
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Watch party", color = p.text, fontWeight = FontWeight.Bold)
-                Text(info?.let { "Code ${it.id} · hosted by ${it.host}" + if (it.control == "host") " · host controls" else "" } ?: party.status.value,
+                Text(info?.let { "Code ${it.id} · hosted by ${it.host}" + (if (it.community.isNotBlank()) " · ${it.community}" else "") +
+                    if (it.control == "host") " · host controls" else "" } ?: party.status.value,
                     color = p.text2, style = MaterialTheme.typography.bodySmall)
             }
             IconButton(onClick = {
@@ -93,6 +94,19 @@ fun PartyPanel(party: PartySession, voice: VoiceSession?, onJoinVoice: () -> Uni
             }
         }
         if (voice?.error?.value != null) Text(voice.error.value!!, color = p.danger, style = MaterialTheme.typography.bodySmall)
+        // the party's queue: plays next, for everyone
+        if (party.queue.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Up next in the party · ${party.queue.size}", color = p.text, fontWeight = FontWeight.Medium, style = MaterialTheme.typography.bodySmall)
+            party.queue.forEachIndexed { i, e ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${i + 1}", color = p.text3, fontSize = 12.sp, modifier = Modifier.width(18.dp))
+                    Text(e.title, color = p.text, modifier = Modifier.weight(1f), maxLines = 1, style = MaterialTheme.typography.bodySmall)
+                    Text(e.by, color = p.text3, fontSize = 11.sp)
+                    if (e.by == info?.members?.firstOrNull { it.user_id == party.myUserId }?.username || party.canControl.value)
+                        IconButton(onClick = { party.queueRemove(i) }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.Close, "Remove", tint = p.text3, modifier = Modifier.size(16.dp)) }
+                }
+            }
+        }
         // reactions
         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             items(REACTIONS) { r ->
@@ -112,7 +126,7 @@ fun PartyPanel(party: PartySession, voice: VoiceSession?, onJoinVoice: () -> Uni
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = { if (message.isNotBlank()) { party.chat(message.trim()); message = "" } }),
             trailingIcon = { IconButton(onClick = { if (message.isNotBlank()) { party.chat(message.trim()); message = "" } }) { Icon(Icons.Filled.Send, "Send", tint = p.text) } })
-        Text("Tip: headphones stop the movie echoing into your mic.", color = p.text3, fontSize = 11.sp)
+        Text("Voice keeps going while you browse. Headphones stop the movie echoing into your mic.", color = p.text3, fontSize = 11.sp)
     }
 }
 
@@ -133,22 +147,29 @@ fun BoxScope.ReactionsOverlay(party: PartySession) {
     }
 }
 
-/** "Watch together": start a party on the current video. */
+/** "Watch together": start a party on the current video, for a community (its members are told) or everyone. */
 @Composable
-fun WatchTogetherDialog(onStart: (everyone: Boolean, hostOnly: Boolean, waitForAll: Boolean) -> Unit, onDismiss: () -> Unit) {
-    var everyone by remember { mutableStateOf(true) }
+fun WatchTogetherDialog(onStart: (everyone: Boolean, hostOnly: Boolean, waitForAll: Boolean, communityId: Int?) -> Unit, onDismiss: () -> Unit) {
+    val communities = PaddockApp.instance.me.collectAsState().value?.communities.orEmpty().filter { it.allows("parties") }
+    var community by remember { mutableStateOf(communities.firstOrNull()?.id) }
     var hostOnly by remember { mutableStateOf(false) }
     var wait by remember { mutableStateOf(true) }
     AlertDialog(onDismissRequest = onDismiss, title = { Text("Watch together") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Everyone streams from your server in their own quality, and Paddock keeps all players in step: play, pause and skip happen for everyone.")
-                SwitchRow("Anyone with an account can join", everyone) { everyone = it }
+                Text("Everyone streams from your server in their own quality, and Paddock keeps all players in step: play, pause and skip happen for everyone. Anyone in the party can add to its queue.")
+                Text("Who can join", fontWeight = FontWeight.Medium)
+                for (c in communities) Row(Modifier.fillMaxWidth().clickable { community = c.id }, verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(community == c.id, { community = c.id }); Text("Everyone in ${c.name}")
+                }
+                Row(Modifier.fillMaxWidth().clickable { community = null }, verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(community == null, { community = null }); Text("Anyone with an account here")
+                }
                 SwitchRow("Only I control playback", hostOnly) { hostOnly = it }
                 SwitchRow("Wait for anyone who's buffering", wait) { wait = it }
             }
         },
-        confirmButton = { TextButton(onClick = { onStart(everyone, hostOnly, wait) }) { Text("Start the party") } },
+        confirmButton = { TextButton(onClick = { onStart(community == null, hostOnly, wait, community) }) { Text("Start the party") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
 }
 

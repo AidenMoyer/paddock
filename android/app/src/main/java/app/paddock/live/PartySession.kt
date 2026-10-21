@@ -37,6 +37,9 @@ class PartySession(val id: String, private val player: ExoPlayer, private var it
     val ended = mutableStateOf<String?>(null)
     val switchTo = mutableStateOf<Int?>(null)
     val canControl = mutableStateOf(true)
+    /** What plays next for everyone (anyone in the party can add to it). */
+    val queue = mutableStateListOf<QueueEntry>()
+    private var fallback: Pair<Int, String>? = null
     var myUserId = 0
         private set
     private var myName = ""
@@ -126,6 +129,7 @@ class PartySession(val id: String, private val player: ExoPlayer, private var it
                 clock.hello(msg["server"]!!.jsonPrimitive.content.toDouble())
                 val p = PaddockJson.decodeFromJsonElement<PartyInfo>(msg["party"]!!)
                 info.value = p
+                queue.clear(); queue.addAll(p.queue)
                 members.clear(); members.addAll(p.members)
                 chat.clear()
                 (msg["chat"] as? kotlinx.serialization.json.JsonArray)?.forEach { c -> chatLine(c.jsonObject) }
@@ -141,6 +145,13 @@ class PartySession(val id: String, private val player: ExoPlayer, private var it
                 main.postDelayed({ reactions.remove(r) }, 2600)
             }
             "error" -> status.value = msg["error"]?.jsonPrimitive?.content ?: ""
+            "queue" -> {
+                queue.clear(); queue.addAll(PaddockJson.decodeFromJsonElement<List<QueueEntry>>(msg["queue"]!!))
+                val by = msg["by"]?.jsonPrimitive?.content
+                if (msg["action"]?.jsonPrimitive?.content == "add" && by != null && by != myName)
+                    chatLine(buildJsonObject { put("type", "notice"); put("text", "$by queued ${msg["title"]?.jsonPrimitive?.content ?: "a video"}") })
+            }
+            "queue_empty" -> { fallback?.let { (item, title) -> switchItem(item, title) }; fallback = null }
             "ended" -> ended.value = "The host ended the watch party."
         }
     }
@@ -194,6 +205,13 @@ class PartySession(val id: String, private val player: ExoPlayer, private var it
     fun chat(text: String) = send("chat") { put("text", text.take(500)) }
     fun react(emoji: String) = send("reaction") { put("emoji", emoji) }
     fun switchItem(item: Int, title: String) = send("item") { put("item_id", item); put("title", title); put("play", true) }
+    /** Move on together: the party's queue first, or [fallbackItem] (this phone's own up-next pick) when it's empty. */
+    fun next(fromItem: Int, fallbackItem: Int?, fallbackTitle: String) {
+        fallback = fallbackItem?.let { it to fallbackTitle }
+        send("next") { put("from", fromItem) }
+    }
+    fun queueAdd(item: Int) = send("queue_add") { put("item_id", item) }
+    fun queueRemove(index: Int) = send("queue_remove") { put("index", index) }
 
     fun close() {
         closed = true

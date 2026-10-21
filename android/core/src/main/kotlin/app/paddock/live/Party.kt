@@ -11,7 +11,10 @@ import kotlinx.serialization.Serializable
     val host: Boolean = false, val devices: Int = 1)
 @Serializable data class PartyInfo(val id: String, val host: String = "", val host_id: Int = 0, val item_id: Int = 0,
     val title: String = "", val everyone: Boolean = true, val control: String = "everyone",
-    val members: List<PartyMember> = emptyList(), val state: PartyState? = null)
+    val members: List<PartyMember> = emptyList(), val state: PartyState? = null,
+    val community_id: Int? = null, val community: String = "", val queue: List<QueueEntry> = emptyList())
+/** Something lined up to play next in a party, and who added it. */
+@Serializable data class QueueEntry(val item_id: Int, val title: String = "", val by: String = "")
 data class ChatLine(val user: String?, val text: String)
 data class Reaction(val emoji: String, val user: String, val key: Long)
 

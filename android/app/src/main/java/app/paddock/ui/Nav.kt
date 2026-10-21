@@ -1,5 +1,9 @@
 package app.paddock.ui
 
+import app.paddock.MainActivity
+import app.paddock.live.VoiceDock
+import app.paddock.live.Live
+import app.paddock.live.IncomingCall
 import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -55,7 +59,7 @@ class Nav(val c: NavHostController) {
     fun back() { c.popBackStack() }
 }
 
-private val ROOTS = setOf("home", "photos", "projects", "you")
+private val ROOTS = setOf("home", "photos", "projects", "together", "you")
 
 @Composable
 fun PaddockRoot() {
@@ -72,6 +76,8 @@ fun PaddockRoot() {
     val route = entry?.destination?.route?.substringBefore("/")?.substringBefore("?") ?: "home"
     val p = LocalPaddock.current
     val conn by app.conn.state.collectAsState()
+    val me by app.me.collectAsState()
+    val mediaOnly = me?.media_only == true
     val fullscreen by NowPlaying.fullscreen
     val inPip by NowPlaying.inPip
     val ctx = LocalContext.current
@@ -82,6 +88,14 @@ fun PaddockRoot() {
         if (uris.isNotEmpty()) ManualUpload.enqueue(ctx, uris)
     }
     UpdatePrompt()
+    IncomingCall()
+    LaunchedEffect(Unit) {
+        Live.notices.collect { android.widget.Toast.makeText(ctx, it, android.widget.Toast.LENGTH_LONG).show() }
+    }
+    // opened from a notification (a call ringing, a watch party starting)
+    LaunchedEffect(Unit) {
+        MainActivity.opens.collect { target -> if (target.startsWith("party/")) nav.go("together") else if (target == "call") nav.go("together") }
+    }
 
     Scaffold(
         containerColor = p.bg,
@@ -97,7 +111,7 @@ fun PaddockRoot() {
                             Mode.Home -> p.ok; Mode.Tunnel -> p.link; Mode.Connecting -> p.text3; else -> p.danger }))
                         Spacer(Modifier.weight(1f))
                         IconButton(onClick = { nav.go("search") }) { Icon(Icons.Outlined.Search, "Search", tint = p.text) }
-                        IconButton(onClick = { nav.go("assistant") }) { Icon(Icons.Outlined.AutoAwesome, "Assistant", tint = p.text) }
+                        if (!mediaOnly) IconButton(onClick = { nav.go("assistant") }) { Icon(Icons.Outlined.AutoAwesome, "Assistant", tint = p.text) }
                     }
                     AnimatedVisibility(conn.mode == Mode.NeedsVpnConsent || conn.mode == Mode.Offline) {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).clip(RoundedCornerShape(10.dp)).background(p.surface)
@@ -117,15 +131,19 @@ fun PaddockRoot() {
             }
         },
         bottomBar = {
-            AnimatedVisibility(route in ROOTS && !inPip, enter = slideInVertically(Motion.enter()) { it }, exit = slideOutVertically(Motion.exit()) { it }) {
-                NavigationBar(containerColor = p.bg, tonalElevation = 0.dp) {
-                    NavItem("home", route, Icons.Filled.Home, Icons.Outlined.Home, "Home") { nav.go("home") }
-                    NavItem("photos", route, Icons.Filled.Photo, Icons.Outlined.Photo, "Photos") { nav.go("photos") }
-                    NavigationBarItem(selected = false, onClick = { pick.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
-                        icon = { Icon(Icons.Outlined.AddCircleOutline, "Upload", Modifier.size(36.dp)) }, label = null,
-                        colors = NavigationBarItemDefaults.colors(unselectedIconColor = p.text, indicatorColor = Color.Transparent))
-                    NavItem("projects", route, Icons.Filled.Work, Icons.Outlined.WorkOutline, "Projects") { nav.go("projects") }
-                    NavItem("you", route, Icons.Filled.AccountCircle, Icons.Outlined.AccountCircle, "You") { nav.go("you") }
+            Column {
+                // voice keeps going everywhere in the app; this is where you see and control it
+                if (!fullscreen && !inPip) VoiceDock(onOpen = { nav.go("together") })
+                AnimatedVisibility(route in ROOTS && !inPip, enter = slideInVertically(Motion.enter()) { it }, exit = slideOutVertically(Motion.exit()) { it }) {
+                    NavigationBar(containerColor = p.bg, tonalElevation = 0.dp) {
+                        NavItem("home", route, Icons.Filled.Home, Icons.Outlined.Home, "Home") { nav.go("home") }
+                        NavItem("photos", route, Icons.Filled.Photo, Icons.Outlined.Photo, "Photos") { nav.go("photos") }
+                        NavigationBarItem(selected = false, onClick = { pick.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
+                            icon = { Icon(Icons.Outlined.AddCircleOutline, "Upload", Modifier.size(36.dp)) }, label = null,
+                            colors = NavigationBarItemDefaults.colors(unselectedIconColor = p.text, indicatorColor = Color.Transparent))
+                        NavItem("together", route, Icons.Filled.Groups, Icons.Outlined.Groups, "Together") { nav.go("together") }
+                        NavItem("you", route, Icons.Filled.AccountCircle, Icons.Outlined.AccountCircle, "You") { nav.go("you") }
+                    }
                 }
             }
         },
@@ -138,6 +156,7 @@ fun PaddockRoot() {
             composable("home") { HomeScreen(nav) }
             composable("photos") { PhotosScreen(nav) }
             composable("projects") { ProjectsScreen(nav) }
+            composable("together") { TogetherScreen(nav) }
             composable("you") { YouScreen(nav) }
             composable("assistant") { Box(Modifier.statusBarsPadding()) { AssistantScreen() } }
             composable("pair") { PairScreen(onPaired = { nav.go("home") }, onCancel = { nav.back() }) }

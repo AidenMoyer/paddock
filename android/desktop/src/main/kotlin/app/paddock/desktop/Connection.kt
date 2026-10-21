@@ -1,5 +1,7 @@
 package app.paddock.desktop
 
+import app.paddock.data.AuthState
+import app.paddock.data.User
 import app.paddock.net.ApiException
 import app.paddock.net.JsonApi
 import app.paddock.net.PinnedTls
@@ -34,6 +36,8 @@ object Connection {
     @Volatile var client: OkHttpClient? = null
         private set
     @Volatile private var server: DesktopServer? = null
+    /** This person on the server: media-only mode, communities (refreshed on every connect). */
+    val me = MutableStateFlow<User?>(null)
 
     val api = JsonApi(clientOf = { client }, baseOf = {
         ensure() ?: throw ApiException(0, _state.value.detail.ifBlank { "Can't reach your server" })
@@ -74,9 +78,12 @@ object Connection {
             }
             if (ok) {
                 _state.value = ConnState(if (url == tunnel) Mode.Tunnel else Mode.Home, url)
+                Events.follow(url)
+                scope.launch { runCatching { api.get<AuthState>("/api/auth/state").user?.let { me.value = it } } }
                 return url
             }
         }
+        Events.follow(null)
         _state.value = ConnState(Mode.Offline, null,
             if (tunnel != null) "Can't reach ${s.name}. Away from home? Turn on the Paddock tunnel in the WireGuard app."
             else "Can't reach ${s.name}. Make sure this computer is on your home network.")

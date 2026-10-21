@@ -1,6 +1,7 @@
 package app.paddock
 
 import android.app.PictureInPictureParams
+import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
 import android.util.Rational
@@ -15,6 +16,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import app.paddock.ui.PaddockRoot
 import app.paddock.ui.screens.NowPlaying
 import app.paddock.ui.theme.PaddockTheme
+import kotlinx.coroutines.flow.MutableSharedFlow
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -27,6 +29,22 @@ class MainActivity : ComponentActivity() {
             val theme by PaddockApp.instance.theme.collectAsState()
             PaddockTheme(theme) { PaddockRoot() }
         }
+        handle(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handle(intent)
+    }
+
+    /** Notifications open the app at what they're about (a call ringing, a watch party). */
+    private fun handle(intent: Intent?) {
+        intent?.getStringExtra("open")?.let { opens.tryEmit(it) }
+        intent?.removeExtra("open")
+    }
+
+    companion object {
+        val opens = MutableSharedFlow<String>(replay = 1, extraBufferCapacity = 4)
     }
 
     /** Leaving the app while a video plays → keep watching in a floating window. */

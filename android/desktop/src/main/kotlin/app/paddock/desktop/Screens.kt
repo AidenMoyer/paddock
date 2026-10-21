@@ -412,35 +412,6 @@ fun MusicBar() {
     }
 }
 
-// ---- watch parties -------------------------------------------------------------------------------
-
-@Composable
-fun PartiesScreen() {
-    val p = LocalPaddock.current
-    var tick by remember { mutableStateOf(0) }
-    val parties by produceState<List<PartyInfo>?>(null, tick) { value = runCatching { Connection.api.get<List<PartyInfo>>("/api/parties") }.getOrDefault(emptyList()) }
-    val list = parties ?: return Loading()
-    LazyColumn(contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item {
-            SectionTitle("Watch parties")
-            Text("Watch together in sync, with chat and voice. Start one from any video with Watch together.", color = p.text2)
-            TextButton(onClick = { tick++ }) { Text("Refresh", color = p.link) }
-        }
-        if (list.isEmpty()) item { Problem("No watch parties right now") }
-        items(list) { party ->
-            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(p.surface).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                RemoteImage("/api/items/${party.item_id}/thumb", Modifier.size(160.dp, 90.dp).clip(RoundedCornerShape(8.dp)))
-                Spacer(Modifier.width(16.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(party.title, color = p.text, fontWeight = FontWeight.Medium, fontSize = 17.sp)
-                    Text("Hosted by ${party.host} · ${party.members.joinToString { it.username }}", color = p.text2)
-                }
-                BrandButton("Join", onClick = { Nav.go(Screen.Watch(party.item_id, party.id)) })
-            }
-        }
-    }
-}
-
 // ---- settings ------------------------------------------------------------------------------------
 
 @Composable

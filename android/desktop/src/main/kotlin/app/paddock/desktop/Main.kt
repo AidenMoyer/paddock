@@ -99,6 +99,7 @@ private fun Shell() {
         Column(Modifier.fillMaxSize()) {
             AnimatedVisibility(!full) { TopBar() }
             ConnectionBanner()
+            NoticeBar()
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 AnimatedContent(screen, transitionSpec = { fadeIn(Motion.enter()) togetherWith fadeOut(Motion.fast()) }, label = "screen") { s ->
                     when (s) {
@@ -106,7 +107,7 @@ private fun Shell() {
                         Screen.Videos -> VideosScreen()
                         Screen.Photos -> PhotosScreen()
                         Screen.Music -> MusicScreen()
-                        Screen.Parties -> PartiesScreen()
+                        Screen.Parties -> TogetherScreen()
                         Screen.Settings -> SettingsScreen()
                         is Screen.Library -> LibraryScreen(s.id, s.name)
                         is Screen.Group -> GroupScreen(s.key, s.name, s.music)
@@ -119,6 +120,7 @@ private fun Shell() {
         }
     }
     PhotoViewerOverlay()
+    IncomingCallDialog()
     }
 }
 
@@ -179,7 +181,7 @@ private fun Sidebar(screen: Screen) {
         NavRow(Icons.Filled.Movie, Icons.Outlined.Movie, "Videos", screen == Screen.Videos) { Nav.root(Screen.Videos) }
         NavRow(Icons.Filled.Photo, Icons.Outlined.Photo, "Photos", screen == Screen.Photos) { Nav.root(Screen.Photos) }
         NavRow(Icons.Filled.MusicNote, Icons.Outlined.MusicNote, "Music", screen == Screen.Music) { Nav.root(Screen.Music) }
-        NavRow(Icons.Filled.Groups, Icons.Outlined.Groups, "Watch parties", screen == Screen.Parties) { Nav.root(Screen.Parties) }
+        NavRow(Icons.Filled.Groups, Icons.Outlined.Groups, "Together", screen == Screen.Parties) { Nav.root(Screen.Parties) }
         HorizontalDivider(Modifier.padding(vertical = 12.dp), color = p.border)
         Text("Libraries", color = p.text2, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 12.dp, bottom = 6.dp))
         Column(Modifier.weight(1f)) {

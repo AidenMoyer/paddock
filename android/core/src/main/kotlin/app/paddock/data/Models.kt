@@ -48,7 +48,56 @@ data class User(
     val display_name: String? = null,
     @Serializable(with = LenientBool::class) val is_admin: Boolean = false,
     @Serializable(with = LenientBool::class) val allow_ai_changes: Boolean = false,
+    /** Movies, shows, music, photos and home videos only (no projects, engineering, footage or assistant). */
+    @Serializable(with = LenientBool::class) val media_only: Boolean = false,
+    val communities: List<CommunityRef> = emptyList(),
 )
+
+@Serializable
+data class CommunityRef(val id: Int, val name: String = "", val role: String? = null, val settings: Map<String, Boolean> = emptyMap()) {
+    fun allows(feature: String) = settings[feature] != false
+}
+
+@Serializable
+data class AuthState(val user: User? = null)
+
+// ---- comments ----------------------------------------------------------------------------
+
+@Serializable
+data class Comment(
+    val id: Int, val item_id: Int = 0, val body: String = "", val at: Double? = null, val created_at: Double = 0.0,
+    val edited_at: Double? = null, val user_id: Int = 0, val username: String = "", val display_name: String = "",
+    val community_id: Int? = null, val community: String = "Everyone", @Serializable(with = LenientBool::class) val mine: Boolean = false,
+)
+
+@Serializable
+data class CommentPlace(val id: Int? = null, val name: String = "Everyone")
+
+@Serializable
+data class CommentsResponse(val comments: List<Comment> = emptyList(), val places: List<CommentPlace> = emptyList())
+
+// ---- calls and lounges ------------------------------------------------------------------------
+
+@Serializable
+data class CallPerson(val user_id: Int, val name: String = "", @Serializable(with = LenientBool::class) val declined: Boolean = false)
+
+@Serializable
+data class CallInfo(
+    val id: String, val room: String = "", val host_id: Int = 0, val host: String = "", val created: Double = 0.0,
+    val people: List<CallPerson> = emptyList(), val in_call: List<app.paddock.live.VoiceMember> = emptyList(),
+    @Serializable(with = LenientBool::class) val ringing: Boolean = false,
+)
+
+@Serializable
+data class Lounge(val room: String, val name: String = "", val community_id: Int = 0, val members: List<app.paddock.live.VoiceMember> = emptyList())
+
+@Serializable
+data class VoicePlaces(val lounges: List<Lounge> = emptyList(), val calls: List<CallInfo> = emptyList(), val online: List<Int> = emptyList())
+
+@Serializable
+data class Person(val id: Int, val username: String = "", val display_name: String? = null) {
+    val name: String get() = display_name ?: username
+}
 
 @Serializable
 data class ServerInfo(val name: String = "Paddock", val version: String = "", val lan: List<String> = emptyList())
@@ -152,6 +201,8 @@ data class ProjectSummary(
     val description: String = "",
     val goal: String = "",
     val location_name: String? = null,
+    val kind: String = "video",
+    val access: String = "write",
     val item_count: Int = 0,
     val cover_id: Int? = null,
     val updated_at: Double = 0.0,
@@ -165,6 +216,9 @@ data class ProjectDetail(
     val id: Int,
     val name: String = "",
     val status: String = "active",
+    val kind: String = "video",
+    val kind_label: String = "",
+    val access: String = "write",
     val description: String = "",
     val goal: String = "",
     val location_name: String? = null,

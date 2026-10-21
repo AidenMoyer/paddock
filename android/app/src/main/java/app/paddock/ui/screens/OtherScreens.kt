@@ -1,5 +1,6 @@
 package app.paddock.ui.screens
 
+import app.paddock.backup.BackupReport
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -28,6 +29,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import app.paddock.backup.ManualUpload
 import app.paddock.PaddockApp
 import app.paddock.backup.Backup
 import app.paddock.data.*
@@ -97,15 +99,43 @@ fun ItemScreen(id: Int, nav: Nav) {
 
 // ---------------- projects ----------------
 
+private val PROJECT_KINDS = listOf("video" to "Making a video", "build" to "A build", "trip" to "A trip or event", "research" to "Research", "general" to "Anything else")
+
 @Composable
 fun ProjectsScreen(nav: Nav) {
     val api = PaddockApp.instance.api
     val p = LocalPaddock.current
+    val scope = rememberCoroutineScope()
     val (load, retry) = rememberLoad(Unit) { api.get<List<ProjectSummary>>("/api/projects") }
+    var creating by remember { mutableStateOf(false) }
+    if (creating) {
+        var name by remember { mutableStateOf("") }
+        var kind by remember { mutableStateOf("video") }
+        AlertDialog(onDismissRequest = { creating = false }, title = { Text("New project") },
+            text = {
+                Column {
+                    OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(8.dp))
+                    for ((k, l) in PROJECT_KINDS) Row(Modifier.fillMaxWidth().clickable { kind = k }, verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(kind == k, { kind = k }); Text(l)
+                    }
+                }
+            },
+            confirmButton = { TextButton(enabled = name.isNotBlank(), onClick = {
+                scope.launch {
+                    runCatching { api.post<JsonObject>("/api/projects", buildJsonObject { put("name", name.trim()); put("kind", kind) }) }
+                        .onSuccess { creating = false; nav.go("project/${it["id"]}") }
+                }
+            }) { Text("Create") } },
+            dismissButton = { TextButton(onClick = { creating = false }) { Text("Cancel") } })
+    }
     Column(Modifier.fillMaxSize()) {
-        Text("Projects", style = MaterialTheme.typography.titleLarge, color = p.text, modifier = Modifier.padding(16.dp))
+        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Projects", style = MaterialTheme.typography.titleLarge, color = p.text, modifier = Modifier.weight(1f))
+            BrandButton("New project") { creating = true }
+        }
         LoadView(load, retry) { list ->
-            if (list.isEmpty()) EmptyState(Icons.Filled.Work, "No projects yet", "Create projects on the web or ask the assistant — they gather footage, photos, CAD and a video plan for each build.")
+            if (list.isEmpty()) EmptyState(Icons.Filled.Work, "No projects yet", "A project gathers everything about one thing — a build, a trip, research — and helps you turn it into a video when you want to.")
             LazyVerticalGrid(GridCells.Adaptive(280.dp), contentPadding = PaddingValues(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalArrangement = Arrangement.spacedBy(20.dp)) {
                 items(list) { pr -> ProjectCard(pr) { nav.go("project/${pr.id}") } }
@@ -120,12 +150,26 @@ fun ProjectScreen(id: Int, nav: Nav) {
     val p = LocalPaddock.current
     val (load, retry) = rememberLoad(id) { api.get<ProjectDetail>("/api/projects/$id") }
     var tab by remember { mutableStateOf("media") }
+    val ctx = LocalContext.current
+    // add photos, videos, sound or any file from the phone straight into this project
+    val addFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) {
+            ManualUpload.enqueue(ctx, uris, projectId = id)
+            android.widget.Toast.makeText(ctx, "Adding ${uris.size} ${if (uris.size == 1) "file" else "files"} to the project", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
     Column(Modifier.fillMaxSize()) {
         TopBar((load as? Load.Ok)?.data?.name ?: "Project", nav)
         LoadView(load, retry) { pr ->
             Column {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(listOfNotNull(pr.kind_label.ifBlank { null }, "${pr.items.size} items", if (pr.access != "write") "view only" else null).joinToString(" · "),
+                        color = p.text2, modifier = Modifier.weight(1f))
+                    if (pr.access == "write") BrandButton("Add files") { addFiles.launch(arrayOf("*/*")) }
+                }
                 if (pr.goal.isNotBlank()) Text("Goal: ${pr.goal}", color = p.text2, modifier = Modifier.padding(horizontal = 16.dp))
-                ChipRow(listOf("media" to "Media (${pr.items.size})", "plan" to "Video plan", "notes" to "Notes (${pr.notes.size})", "ask" to "Ask AI"), tab) { tab = it }
+                ChipRow(listOf("media" to "Media (${pr.items.size})", "plan" to if (pr.kind == "video") "Video plan" else "Make a video",
+                    "notes" to "Notes (${pr.notes.size})", "ask" to "Ask AI"), tab) { tab = it }
                 when (tab) {
                     "media" -> LazyVerticalGrid(GridCells.Adaptive(220.dp), contentPadding = PaddingValues(16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp)) { items(pr.items) { it -> VideoCard(it, compact = true) { nav.open(it) } } }
@@ -258,6 +302,10 @@ fun YouScreen(nav: Nav) {
     var theme by remember { mutableStateOf(s.theme) }
     val perms = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
         if (r.values.any { it }) { s.backupEnabled = true; backup = true; Backup.schedule(ctx); Backup.runNow(ctx) }
+        else {
+            BackupReport.setStatus(ctx, "Paddock isn't allowed to see your photos, so nothing can back up. Allow photo access for Paddock in Android settings.")
+            android.widget.Toast.makeText(ctx, "Backup needs access to your photos", android.widget.Toast.LENGTH_LONG).show()
+        }
     }
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
@@ -284,6 +332,25 @@ fun YouScreen(nav: Nav) {
                 ToggleRow("Only while charging", charging) { charging = it; s.backupChargingOnly = it; Backup.schedule(ctx) }
                 ToggleRow("Also back up when away (through the tunnel)", remote) { remote = it; s.backupRemote = it }
                 if (backup) TextButton(onClick = { Backup.runNow(ctx) }) { Text("Back up now", color = p.link) }
+                // what happened, in plain words: nothing fails quietly
+                var refresh by remember { mutableIntStateOf(0) }
+                val (status, at) = remember(refresh) { BackupReport.status(ctx) }
+                val problems = remember(refresh) { BackupReport.problems(ctx) }
+                LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(5000); refresh++ } }
+                if (status.isNotBlank()) Text("$status · ${timeAgo(at / 1000.0)}", color = p.text2, style = MaterialTheme.typography.bodySmall)
+                if (problems.isNotEmpty()) {
+                    Text("Didn't upload", color = p.danger, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 8.dp))
+                    for (pr in problems.takeLast(8).reversed()) {
+                        Column(Modifier.padding(vertical = 3.dp)) {
+                            Text(pr.name, color = p.text, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                            Text(pr.reason, color = p.text2, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    Row {
+                        TextButton(onClick = { BackupReport.clear(ctx); Backup.runNow(ctx); refresh++ }) { Text("Try again", color = p.link) }
+                        TextButton(onClick = { BackupReport.clear(ctx); refresh++ }) { Text("Clear", color = p.text2) }
+                    }
+                }
                 Text("New photos and videos go to the backup library on your server, keep their location data, and are never uploaded twice.",
                     color = p.text3, style = MaterialTheme.typography.bodySmall)
             }

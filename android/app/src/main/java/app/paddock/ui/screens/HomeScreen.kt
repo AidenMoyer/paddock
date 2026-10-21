@@ -29,11 +29,24 @@ fun HomeScreen(nav: Nav) {
     val api = PaddockApp.instance.api
     val conn by PaddockApp.instance.conn.state.collectAsState()
     val (load, retry) = rememberLoad(conn.baseUrl) { api.get<HomeFeed>("/api/home") }
+    val mediaOnly = PaddockApp.instance.me.collectAsState().value?.media_only == true
+    val kinds = PaddockApp.instance.libraries.collectAsState().value.map { it.kind }.toSet()
     LazyColumn(Modifier.fillMaxSize()) {
         item {
-            ChipRow(listOf("all" to "All", "movies" to "Movies", "shows" to "TV", "music" to "Music", "photos" to "Photos",
-                "videos" to "Home videos", "red" to "Footage", "engineering" to "Engineering", "favorites" to "Favorites"), "all") {
-                when (it) { "all" -> {}; "photos" -> nav.go("photos"); else -> nav.go("browse/$it") }
+            // jump between kinds of media: only the ones this server (and this person) has
+            val tabs = listOf("all" to "All", "movies" to "Movies", "shows" to "TV", "videos" to "Home videos", "photos" to "Photos",
+                "music" to "Music", "red" to "Footage", "engineering" to "Engineering", "projects" to "Projects", "together" to "Together",
+                "favorites" to "Favorites").filter { (k, _) ->
+                when (k) {
+                    "movies", "shows", "music", "photos" -> k in kinds
+                    "videos" -> "home_videos" in kinds || "mixed" in kinds
+                    "red", "engineering" -> k in kinds && !mediaOnly
+                    "projects" -> !mediaOnly
+                    else -> true
+                }
+            }
+            ChipRow(tabs, "all") {
+                when (it) { "all" -> {}; "photos" -> nav.go("photos"); "projects" -> nav.go("projects"); "together" -> nav.go("together"); else -> nav.go("browse/$it") }
             }
         }
         item { app.paddock.live.PartiesRow(nav) }

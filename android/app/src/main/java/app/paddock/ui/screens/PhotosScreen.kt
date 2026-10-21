@@ -6,7 +6,12 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -23,12 +28,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.paddock.PaddockApp
 import app.paddock.data.Item
 import app.paddock.ui.*
 import app.paddock.ui.theme.LocalPaddock
+import app.paddock.live.CommentsSection
 import java.text.DateFormat
 import java.util.Date
 
@@ -92,26 +99,42 @@ fun PhotosScreen(nav: Nav) {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun PhotoViewer(items: List<Item>, start: Int, onClose: () -> Unit, onPlay: (Item) -> Unit) {
     val pager = rememberPagerState(initialPage = start) { items.size }
     var chrome by remember { mutableStateOf(true) }
+    var comments by remember { mutableStateOf(false) }
     androidx.activity.compose.BackHandler { onClose() }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        HorizontalPager(pager, beyondViewportPageCount = 1) { page ->
+        // swipe sideways between photos like Google Photos; pinch or double-tap to zoom, then drag to look around
+        HorizontalPager(pager, beyondViewportPageCount = 2) { page ->
             val it = items[page]
             var scale by remember { mutableFloatStateOf(1f) }
             var offsetX by remember { mutableFloatStateOf(0f) }
             var offsetY by remember { mutableFloatStateOf(0f) }
+            LaunchedEffect(pager.currentPage) { if (pager.currentPage != page) { scale = 1f; offsetX = 0f; offsetY = 0f } }
             Box(Modifier.fillMaxSize()
                 .pointerInput(page) {
-                    detectTransformGestures { _, pan, zoom, _ ->
-                        scale = (scale * zoom).coerceIn(1f, 6f)
-                        if (scale > 1f) { offsetX += pan.x; offsetY += pan.y } else { offsetX = 0f; offsetY = 0f }
+                    // only take the gesture for a pinch, or a drag while zoomed in; a one-finger swipe goes to the pager
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        do {
+                            val event = awaitPointerEvent()
+                            if (event.changes.size > 1 || scale > 1f) {
+                                scale = (scale * event.calculateZoom()).coerceIn(1f, 6f)
+                                val pan = event.calculatePan()
+                                if (scale > 1f) { offsetX += pan.x; offsetY += pan.y } else { offsetX = 0f; offsetY = 0f }
+                                event.changes.forEach { c -> if (c.positionChanged()) c.consume() }
+                            }
+                        } while (event.changes.any { c -> c.pressed })
                     }
                 }
-                .clickable { chrome = !chrome }, contentAlignment = Alignment.Center) {
+                .pointerInput(page) {
+                    detectTapGestures(onTap = { chrome = !chrome }, onDoubleTap = {
+                        if (scale > 1f) { scale = 1f; offsetX = 0f; offsetY = 0f } else scale = 2.5f
+                    })
+                }, contentAlignment = Alignment.Center) {
                 Thumb(it.id, Modifier.fillMaxSize().graphicsLayer { scaleX = scale; scaleY = scale; translationX = offsetX; translationY = offsetY },
                     contain = true, preview = it.kind == "photo")
                 if (it.kind == "video") FilledIconButton(onClick = { onPlay(it) }, modifier = Modifier.size(72.dp)) { Icon(Icons.Filled.PlayArrow, "Play", Modifier.size(40.dp)) }
@@ -125,8 +148,14 @@ fun PhotoViewer(items: List<Item>, start: Int, onClose: () -> Unit, onPlay: (Ite
                     Text(cur?.title ?: "", color = Color.White, maxLines = 1)
                     Text(listOfNotNull(fmtDate(cur?.taken_at).ifBlank { null }, if (cur?.width != null && cur.height != null) "${cur.width}×${cur.height}" else null).joinToString(" · "), color = Color(0xFFBBBBBB), fontSize = 12.sp)
                 }
-                Text("${pager.currentPage + 1} / ${items.size}", color = Color(0xFFBBBBBB), modifier = Modifier.padding(end = 12.dp))
+                Text("${pager.currentPage + 1} / ${items.size}", color = Color(0xFFBBBBBB))
+                IconButton(onClick = { comments = true }) { Icon(Icons.Filled.ChatBubbleOutline, "Comments", tint = Color.White) }
             }
+        }
+    }
+    if (comments) items.getOrNull(pager.currentPage)?.let { cur ->
+        ModalBottomSheet(onDismissRequest = { comments = false }) {
+            Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()).padding(bottom = 24.dp)) { CommentsSection(cur.id) }
         }
     }
 }
