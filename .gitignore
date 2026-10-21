@@ -36,3 +36,7 @@ os/out/
 .claude/
 .DS_Store
 Thumbs.db
+
+# the Android app bundled into server releases by CI
+server/android-app/*.apk
+server/android-app/release.json

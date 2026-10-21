@@ -45,6 +45,7 @@ import app.paddock.net.Mode
 import app.paddock.ui.screens.*
 import app.paddock.ui.theme.LocalPaddock
 import app.paddock.ui.theme.Motion
+import app.paddock.update.UpdatePrompt
 import java.net.URLDecoder
 
 class Nav(val c: NavHostController) {
@@ -80,6 +81,7 @@ fun PaddockRoot() {
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(50)) { uris ->
         if (uris.isNotEmpty()) ManualUpload.enqueue(ctx, uris)
     }
+    UpdatePrompt()
 
     Scaffold(
         containerColor = p.bg,

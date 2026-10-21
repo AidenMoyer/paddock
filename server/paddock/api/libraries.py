@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from .. import db, kinds, scanner
+from .. import db, kinds, scanner, system
 from ..actor import Actor
 from ..config import settings
 from .deps import current_actor, require_admin
@@ -141,7 +141,7 @@ def browse(path: str | None = None, actor: Actor = Depends(require_admin)):
             continue  # unreachable network drive
     if not path:
         return {"path": None, "parent": None, "roots": [str(r) for r in roots],
-                "dirs": [{"name": str(r), "path": str(r)} for r in roots]}
+                "dirs": [{"name": str(r), "path": str(r)} for r in roots], "network_shares": system.available()}
     p = Path(path).resolve()
     if not scanner.allowed_root(p) or not p.is_dir():
         raise HTTPException(400, "Not an allowed folder")

@@ -562,6 +562,143 @@ def op_logs(a: dict) -> dict:
     return {"unit": unit, "text": run(["journalctl", *sel, "-n", str(lines), "--no-pager", "-o", "short-iso"], check=False)}
 
 
+# ---- network shares (SMB / Windows file sharing) -----------------------------------------------
+# on the data partition (root-only), so both kinds of upgrade keep them: <name>.json + <name>.cred (password)
+SMB_DIR = Path("/srv/data/system/smb")
+SMB_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
+SMB_HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,252})$")
+SMB_SHARE_RE = re.compile(r"^[^/\\\x00-\x1f\"<>|?*]{1,80}$")
+SMB_ERRORS = {"13": "The username or password was rejected", "2": "That share doesn't exist on the server",
+              "112": "The server didn't answer (is it on and sharing?)", "113": "The server isn't reachable from here",
+              "115": "The server didn't answer in time", "95": "The server needs an SMB version this system doesn't speak"}
+
+
+def _smb_mountpoint(name: str) -> Path:
+    return Path("/srv/media") / name
+
+
+def _smb_mount(cfg: dict) -> None:
+    mp = _smb_mountpoint(cfg["name"])
+    if run(["findmnt", "-rno", "TARGET", str(mp)], check=False).strip():
+        return
+    mp.mkdir(parents=True, exist_ok=True)
+    login = f"credentials={SMB_DIR / (cfg['name'] + '.cred')}" if cfg.get("username") else "guest"
+    opts = [login, "uid=568", "gid=568", "file_mode=0664", "dir_mode=0775",
+            "ro" if cfg.get("readonly", True) else "rw", "nosuid", "nodev", "noexec", "iocharset=utf8", "soft", "actimeo=30",
+            "echo_interval=15"]
+    r = subprocess.run(["mount", "-t", "cifs", f"//{cfg['server']}/{cfg['share']}", str(mp), "-o", ",".join(opts)],
+                       capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        try:
+            mp.rmdir()
+        except OSError:
+            pass
+        code = re.search(r"error\((\d+)\)", r.stderr or "")
+        raise Refused(SMB_ERRORS.get(code.group(1) if code else "", (r.stderr or "Mount failed").strip()[-200:]))
+
+
+def _smb_configs() -> list[dict]:
+    out = []
+    for f in sorted(SMB_DIR.glob("*.json")) if SMB_DIR.exists() else []:
+        try:
+            out.append(json.loads(f.read_text()))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def op_smb_list(_: dict) -> list[dict]:
+    shares = []
+    for cfg in _smb_configs():
+        mp = _smb_mountpoint(cfg["name"])
+        mounted = bool(run(["findmnt", "-rno", "TARGET", str(mp)], check=False).strip())
+        use = shutil.disk_usage(mp) if mounted else None
+        shares.append(cfg | {"mounted": mounted, "mountpoint": str(mp), "size": use.total if use else None,
+                             "free": use.free if use else None})
+    return shares
+
+
+def op_smb_add(a: dict) -> dict:
+    name = (a.get("name") or "").strip().lower()
+    server = (a.get("server") or "").strip().lstrip("\\/")
+    share = (a.get("share") or "").strip().strip("\\/")
+    user = (a.get("username") or "").strip()
+    if not SMB_NAME_RE.match(name):
+        raise Refused("Name: lowercase letters, numbers and dashes")
+    if (SMB_DIR / f"{name}.json").exists():
+        raise Refused("There's already a network share with that name")
+    if _smb_mountpoint(name).exists():
+        raise Refused("That name is already used by a drive under /srv/media")
+    if not SMB_HOST_RE.match(server):
+        raise Refused("Server: a computer name or IP address, e.g. 192.168.1.20")
+    if not SMB_SHARE_RE.match(share):
+        raise Refused("Share: the shared folder's name, e.g. Movies")
+    for v in (user, a.get("password") or "", a.get("domain") or ""):
+        if "\n" in v or "\r" in v or len(v) > 256:
+            raise Refused("Username, password and domain must be single lines")
+    SMB_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(SMB_DIR.parent, 0o700)
+    cred = SMB_DIR / f"{name}.cred"
+    lines = [f"username={user}", f"password={a.get('password') or ''}"]
+    if a.get("domain"):
+        lines.append(f"domain={a['domain']}")
+    fd = os.open(cred, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    cfg = {"name": name, "server": server, "share": share, "username": user, "readonly": bool(a.get("readonly", True))}
+    try:
+        _smb_mount(cfg)                         # test it now: a wrong password is reported right away
+    except Refused:
+        cred.unlink(missing_ok=True)
+        raise
+    (SMB_DIR / f"{name}.json").write_text(json.dumps(cfg))
+    return cfg | {"mountpoint": str(_smb_mountpoint(name))}
+
+
+def _smb_config(a: dict) -> dict:
+    name = (a.get("name") or "").strip().lower()
+    if not SMB_NAME_RE.match(name) or not (SMB_DIR / f"{name}.json").exists():
+        raise Refused("No network share by that name")
+    return json.loads((SMB_DIR / f"{name}.json").read_text())
+
+
+def op_smb_connect(a: dict) -> dict:
+    """Try again now (the other computer was off when Paddock OS started, or the network dropped)."""
+    cfg = _smb_config(a)
+    _smb_mount(cfg)
+    return {"connected": cfg["name"]}
+
+
+def op_smb_remove(a: dict) -> dict:
+    name = _smb_config(a)["name"]
+    mp = _smb_mountpoint(name)
+    run(["umount", str(mp)], check=False)
+    run(["umount", "-l", str(mp)], check=False)
+    try:
+        mp.rmdir()
+    except OSError:
+        pass
+    (SMB_DIR / f"{name}.json").unlink(missing_ok=True)
+    (SMB_DIR / f"{name}.cred").unlink(missing_ok=True)
+    return {"removed": name}
+
+
+def mount_all_smb() -> None:
+    """At boot (paddock-smb.service): mount every configured share, retrying while the network settles."""
+    pending = _smb_configs()
+    for _ in range(12):
+        left = []
+        for cfg in pending:
+            try:
+                _smb_mount(cfg)
+            except (Refused, subprocess.TimeoutExpired):
+                left.append(cfg)
+        if not left:
+            return
+        pending = left
+        time.sleep(10)
+
+
 UPDATER = ["/usr/bin/python3", "/usr/local/sbin/paddock-update"]
 
 
@@ -610,6 +747,7 @@ def op_update_settings(a: dict) -> dict:
 
 
 OPS = {
+    "smb_list": op_smb_list, "smb_add": op_smb_add, "smb_connect": op_smb_connect, "smb_remove": op_smb_remove,
     "update_status": op_update_status, "update_check": op_update_check, "update_apply": op_update_apply,
     "update_settings": op_update_settings,
     "info": op_info, "disks": op_disks, "mount": op_mount, "unmount": op_unmount, "format": op_format,
@@ -623,6 +761,9 @@ OPS = {
 def main() -> None:
     if sys.argv[1:] == ["--revert-network"]:
         revert_network()
+        return
+    if sys.argv[1:] == ["--mount-smb"]:
+        mount_all_smb()
         return
     raw = sys.stdin.buffer.readline(65536)
     try:

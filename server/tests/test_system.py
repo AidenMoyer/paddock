@@ -81,6 +81,11 @@ def test_requests_reach_the_agent_and_are_audited(admin, monkeypatch, tmp_path):
         assert seen[-1]["args"]["disks"] == ["/dev/sdb", "/dev/sdc", "/dev/sdd"]
         entry = db.q1("SELECT * FROM audit_log WHERE action='system.pool_create' ORDER BY id DESC LIMIT 1")
         assert entry and "confirm" not in (entry["detail"] or "")
+        share = admin.post("/api/admin/system/smb", json={"name": "nas", "server": "192.168.1.20", "share": "Movies",
+                                                          "username": "me", "password": "hunter2-secret"})
+        assert share.status_code == 200 and seen[-1]["args"]["password"] == "hunter2-secret"
+        entry = db.q1("SELECT * FROM audit_log WHERE action='system.smb_add' ORDER BY id DESC LIMIT 1")
+        assert entry and "hunter2" not in (entry["detail"] or "") and "Movies" in entry["detail"]
     finally:
         srv.close()
 
@@ -106,6 +111,34 @@ def test_agent_refuses_bad_input_before_touching_anything():
         agent.op_hostname({"hostname": "bad name!"})
     with pytest.raises(agent.Refused):
         agent.op_power({"action": "format-everything"})
+
+
+def test_agent_checks_network_share_settings(tmp_path, monkeypatch):
+    agent = load_agent()
+    monkeypatch.setattr(agent, "SMB_DIR", tmp_path / "smb")
+    monkeypatch.setattr(agent, "_smb_mountpoint", lambda name: tmp_path / "media" / name)
+    mounted = []
+    monkeypatch.setattr(agent, "_smb_mount", lambda cfg: mounted.append(cfg))
+    monkeypatch.setattr(agent, "run", lambda *a, **k: "")
+    good = {"name": "nas", "server": "192.168.1.20", "share": "Movies", "username": "me", "password": "pw"}
+    for bad, why in [({"name": "My NAS"}, "Name"), ({"server": "host; rm -rf /"}, "Server"),
+                     ({"server": "a b"}, "Server"), ({"share": "a/../b"}, "Share"), ({"share": ""}, "Share"),
+                     ({"password": "pw\nusername=root"}, "single lines"), ({"username": "x\ry"}, "single lines")]:
+        with pytest.raises(agent.Refused, match=why):
+            agent.op_smb_add(good | bad)
+    assert mounted == []
+    out = agent.op_smb_add(good | {"server": r"\\nas.local", "share": "\\Movies\\"})
+    assert out["server"] == "nas.local" and out["share"] == "Movies" and out["readonly"] is True
+    assert "password" not in json.loads((tmp_path / "smb" / "nas.json").read_text())
+    assert (tmp_path / "smb" / "nas.cred").read_text() == "username=me\npassword=pw\n"
+    if os.name != "nt":
+        assert (tmp_path / "smb" / "nas.cred").stat().st_mode & 0o077 == 0
+    with pytest.raises(agent.Refused, match="already"):
+        agent.op_smb_add(good)
+    agent.op_smb_remove({"name": "nas"})
+    assert not list((tmp_path / "smb").iterdir())
+    with pytest.raises(agent.Refused):
+        agent.op_smb_remove({"name": "../etc"})
 
 
 def test_agent_protocol_rejects_unknown_operations():

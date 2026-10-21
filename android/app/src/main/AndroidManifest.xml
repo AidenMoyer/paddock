@@ -17,6 +17,8 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <!-- keep GPS in backed-up photos (Android strips it otherwise) -->
     <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+    <!-- updates come from the user's own server (Updater), installed through Android's package installer -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -65,6 +67,8 @@
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
+
+        <receiver android:name=".update.UpdateReceiver" android:exported="false" />
 
         <activity
             android:name="com.journeyapps.barcodescanner.CaptureActivity"

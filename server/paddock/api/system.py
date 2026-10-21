@@ -1,4 +1,4 @@
-"""Manage server → System: drives, RAID pools, network, name, time, power and logs (Paddock OS)."""
+"""Manage server → System: drives, RAID pools, network shares, network, name, time, power and logs (Paddock OS)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from ..actor import Actor
 from .deps import require_admin
 
 router = APIRouter(prefix="/api/admin/system")
+SECRET_ARGS = {"confirm", "password"}
 
 
 def agent(actor: Actor, op: str, audit: bool = True, timeout: float = 60, **args) -> dict:
@@ -18,7 +19,7 @@ def agent(actor: Actor, op: str, audit: bool = True, timeout: float = 60, **args
     except system.AgentError as e:
         raise HTTPException(400, str(e))
     if audit:
-        db.audit(actor.audit_name, f"system.{op}", **{k: v for k, v in args.items() if k != "confirm"})
+        db.audit(actor.audit_name, f"system.{op}", **{k: v for k, v in args.items() if k not in SECRET_ARGS})
     return result
 
 
@@ -158,6 +159,36 @@ def timezone(body: TimezoneBody, actor: Actor = Depends(require_admin)):
 @router.post("/power")
 def power(body: PowerBody, actor: Actor = Depends(require_admin)):
     return agent(actor, "power", action=body.action)
+
+
+class ShareBody(BaseModel):
+    name: str = Field(min_length=1, max_length=31)
+    server: str = Field(min_length=1, max_length=253)
+    share: str = Field(min_length=1, max_length=80)
+    username: str = Field(default="", max_length=256)
+    password: str = Field(default="", max_length=256)
+    domain: str = Field(default="", max_length=256)
+    readonly: bool = True
+
+
+@router.get("/smb")
+def shares(actor: Actor = Depends(require_admin)):
+    return agent(actor, "smb_list", audit=False)
+
+
+@router.post("/smb")
+def share_add(body: ShareBody, actor: Actor = Depends(require_admin)):
+    return agent(actor, "smb_add", timeout=90, **body.model_dump())
+
+
+@router.post("/smb/{name}/connect")
+def share_connect(name: str, actor: Actor = Depends(require_admin)):
+    return agent(actor, "smb_connect", timeout=90, name=name)
+
+
+@router.delete("/smb/{name}")
+def share_remove(name: str, actor: Actor = Depends(require_admin)):
+    return agent(actor, "smb_remove", name=name)
 
 
 class UpdateSettingsBody(BaseModel):

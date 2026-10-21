@@ -166,7 +166,9 @@ export function pickDirectory(start) {
         ...r.dirs.map((d) => h("a", { ondblclick: () => load(d.path), onclick: (e) => {
           box.querySelectorAll("a").forEach((a) => a.classList.remove("sel")); e.currentTarget.classList.add("sel"); picked = d.path; useBtn.disabled = false;
         } }, icon("folder", "sm"), d.name, h("span", { class: "spacer" }), iconBtn("chevronRight", "Open", (e) => { e.stopPropagation(); load(d.path); }))),
-        !r.dirs.length ? h("div", { class: "muted", style: { padding: "12px" } }, "No sub-folders") : null);
+        !r.dirs.length ? h("div", { class: "muted", style: { padding: "12px" } }, "No sub-folders") : null,
+        !r.path && r.network_shares ? h("button", { class: "btn sm", style: { margin: "10px 12px" }, onclick: () => addShareDialog((s) => load(s.mountpoint)) },
+          icon("lan", "sm"), "Connect a network share…") : null);
     };
     let done = false;
     const m = modal("Choose a folder", h("div", null, h("p", { class: "muted", style: { marginTop: 0 } }, "Only datasets mounted into the Paddock app are listed. Double-click to open a folder."), box), {
@@ -249,6 +251,8 @@ async function systemPage(c) {
   const storage = h("div", null, loader());
   const net = h("div", null, loader());
   c.append(panel("Drives & pools", "Combine drives into a pool for more space and to survive a drive failing. Pools and single drives appear under /srv/media, ready to add as libraries.", storage));
+  const shares = h("div", null, loader());
+  c.append(panel("Network shares", "Shared folders on other computers or a NAS (Windows file sharing / SMB), used like a drive. Paddock OS reconnects to them at every start.", shares));
   c.append(panel("Network", null, net));
   c.append(namePanel(i, ov.timezones || []));
   const upd = h("div", null, loader());
@@ -257,6 +261,7 @@ async function systemPage(c) {
   c.append(powerPanel());
   c.append(logsPanel());
   drawStorage(storage);
+  drawShares(shares);
   drawNetwork(net);
 }
 
@@ -413,6 +418,66 @@ async function formatDrive(x, redraw) {
   toast("Formatting…");
   await api.post("/api/admin/system/disks/format", { disk: x.path, label, confirm: typed });
   toast("Ready"); redraw();
+}
+
+async function drawShares(box) {
+  let list;
+  try { list = await api.get("/api/admin/system/smb"); } catch (e) { box.replaceChildren(h("p", { class: "muted" }, e.message)); return; }
+  const redraw = () => { if (box.isConnected) drawShares(box); };
+  const addLib = (s) => addLibrary(() => navigate("/admin/libraries"), s.mountpoint);
+  const rows = list.map((s) => h("tr", null,
+    h("td", null, h("div", null, s.name), h("div", { class: "muted small mono" }, `\\\\${s.server}\\${s.share}`)),
+    h("td", null, h("span", { class: "mono small" }, s.mountpoint)),
+    h("td", null, s.readonly ? "Read-only" : "Read & write"),
+    h("td", null, s.mounted ? h("span", { class: "pill ok" }, s.free != null ? `Connected · ${fmtBytes(s.free)} free` : "Connected")
+      : h("span", { class: "pill warn" }, "Not connected")),
+    h("td", null, h("div", { class: "row wrap", style: { gap: "6px" } },
+      s.mounted ? h("button", { class: "btn sm", onclick: () => addLib(s) }, icon("add", "sm"), "Add as library")
+        : h("button", { class: "btn sm", onclick: async () => { await api.post(`/api/admin/system/smb/${encodeURIComponent(s.name)}/connect`); toast("Connected"); redraw(); } }, icon("refresh", "sm"), "Reconnect"),
+      h("button", { class: "btn sm ghost", onclick: async () => {
+        if (!(await confirmDialog(`Disconnect ${s.name}?`, "Paddock forgets this share. Nothing on the other computer is touched; libraries in it show as missing until you connect it again.", { ok: "Disconnect", danger: true }))) return;
+        await api.del(`/api/admin/system/smb/${encodeURIComponent(s.name)}`); toast("Disconnected"); redraw();
+      } }, "Disconnect")))));
+  box.replaceChildren(
+    list.length ? h("div", { class: "tbl-wrap" }, h("table", { class: "tbl" },
+      h("thead", null, h("tr", null, ...["Share", "Appears as", "Access", "Status", ""].map((t) => h("th", null, t)))), h("tbody", null, rows)))
+      : h("p", { class: "muted small", style: { marginTop: 0 } }, "No network shares yet."),
+    h("button", { class: "btn", style: { marginTop: "12px" }, onclick: () => addShareDialog((s) => { redraw(); addLib(s); }) }, icon("add", "sm"), "Connect a network share"));
+}
+
+function addShareDialog(onDone) {
+  const server = h("input", { class: "input", placeholder: "192.168.1.20 or nas.local" });
+  const share = h("input", { class: "input", placeholder: "Movies" });
+  const user = h("input", { class: "input", autocomplete: "off", placeholder: "Empty for guest access" });
+  const pw = h("input", { class: "input", type: "password", autocomplete: "new-password" });
+  const name = h("input", { class: "input", maxlength: 31, placeholder: "nas-movies" });
+  let readonly = true, named = false;
+  const autoName = () => { if (!named) name.value = `${server.value.split(".")[0]}-${share.value}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 31); };
+  // pasting \\server\share (or smb://server/share) into the first box fills in both
+  server.addEventListener("input", () => {
+    const m = server.value.trim().match(/^(?:smb:)?[\\/]{2}([^\\/]+)[\\/]+(.+?)[\\/]*$/i);
+    if (m) { server.value = m[1]; share.value = m[2]; }
+    autoName();
+  });
+  share.addEventListener("input", autoName);
+  name.addEventListener("input", () => { named = true; });
+  const btn = h("button", { class: "btn accent" }, "Connect");
+  const m = modal("Connect a network share", h("div", { class: "stack share-form" },
+    h("div", { class: "row wrap" }, field("Computer", server, "Name or IP address — or paste \\\\computer\\share"), field("Shared folder", share)),
+    h("div", { class: "row wrap" }, field("Username", user, "For a domain account: DOMAIN\\name"), field("Password", pw)),
+    field("Name in Paddock", name, "Lowercase letters, numbers and dashes. It appears as /srv/media/<name>."),
+    switchEl("Read-only", true, (v) => { readonly = v; }, "Recommended: Paddock can never change files on the share. Turn off to let engineering libraries auto-file into it.")), {
+    wide: true, foot: [h("button", { class: "btn ghost", onclick: () => m.close() }, "Cancel"), btn],
+  });
+  btn.onclick = async () => {
+    const [domain, username] = user.value.includes("\\") ? user.value.trim().split("\\", 2) : ["", user.value.trim()];
+    btn.disabled = true; btn.textContent = "Connecting…";
+    try {
+      const r = await api.post("/api/admin/system/smb", { name: name.value.trim().toLowerCase(), server: server.value.trim(), share: share.value.trim(),
+        username, password: pw.value, domain, readonly });
+      m.close(); toast(`Connected — ${r.mountpoint}`); onDone?.(r);
+    } finally { btn.disabled = false; btn.textContent = "Connect"; }
+  };
 }
 
 async function drawNetwork(box) {

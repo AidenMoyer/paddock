@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__, db, federation, jobs, mcp, portmap, tls, transcode, wireguard
-from .api import admin, assistant, auth, federation as federation_api, libraries, media, party as party_api, projects, share, system as system_api, uploads, voice as voice_api
+from .api import admin, assistant, auth, clients, federation as federation_api, libraries, media, party as party_api, projects, share, system as system_api, uploads, voice as voice_api
 from .api.deps import client_ip, network_zone
 from .config import settings
 
@@ -94,7 +94,7 @@ def create_app() -> FastAPI:
 
     for r in (auth.router, libraries.router, media.router, projects.router, uploads.router, admin.router,
               assistant.router, share.router, federation_api.router, system_api.router, party_api.router,
-              voice_api.router, mcp.router):
+              voice_api.router, clients.router, mcp.router):
         app.include_router(r)
 
     @app.get("/api/health")
@@ -103,11 +103,14 @@ def create_app() -> FastAPI:
 
     @app.get("/download/android")
     def android_apk():
-        """The Android app, served from data/downloads/paddock.apk (home network / tunnel only, like everything else)."""
-        apk = settings.data_dir / "downloads" / "paddock.apk"
+        """First install of the Android app (home network / tunnel only, like everything else): the copy bundled
+        with this release, or one an admin put in data/downloads/paddock.apk. Updates then come via /api/app/android."""
+        rel = clients.android_release()
+        apk = settings.android_dir / "paddock.apk" if rel else settings.data_dir / "downloads" / "paddock.apk"
         if not apk.exists():
-            return JSONResponse({"detail": "No Android app has been uploaded to this server yet"}, status_code=404)
-        return FileResponse(apk, media_type="application/vnd.android.package-archive", filename="paddock.apk")
+            return JSONResponse({"detail": "This server doesn't include the Android app"}, status_code=404)
+        name = f"Paddock-{rel['version_name']}.apk" if rel else "paddock.apk"
+        return FileResponse(apk, media_type="application/vnd.android.package-archive", filename=name)
 
     if WEB_DIR.exists():
         app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")

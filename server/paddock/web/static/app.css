@@ -319,6 +319,9 @@ textarea.input { height: auto; min-height: 96px; padding: 10px 12px; resize: ver
 .callout.bad { background: rgba(255, 78, 69, .12); }
 .callout.ok { background: rgba(43, 166, 64, .12); }
 .callout .icon { flex: none; width: 20px; height: 20px; }
+.share-form { gap: 0; }
+.share-form > .row { align-items: flex-start; gap: 12px; }
+.share-form > .row > .field { flex: 1 1 200px; }
 .model-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 12px;
   transition: border-color var(--dur-base) var(--ease-standard), background var(--dur-base) var(--ease-standard); }
 .model-row:hover { background: var(--hover); }

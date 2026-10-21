@@ -12,6 +12,7 @@ import app.paddock.net.ConnectionManager
 import app.paddock.net.Mode
 import app.paddock.net.PaddockTunnel
 import app.paddock.player.Players
+import app.paddock.update.Updater
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
@@ -58,6 +59,7 @@ class PaddockApp : Application(), ImageLoaderFactory {
             conn.state.collectLatest { st ->
                 if (st.mode == Mode.Home || st.mode == Mode.Tunnel) {
                     runCatching { libraries.value = api.get<List<Library>>("/api/libraries") }
+                    Updater.check(this@PaddockApp)
                 }
             }
         }

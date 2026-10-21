@@ -48,6 +48,8 @@ WORKDIR /app
 COPY server/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY server/paddock /app/paddock
+# the matching Android app (release builds), offered to phones as an in-app update
+COPY server/android-app/ /app/android-app/
 COPY server/scripts/paddock_mcp_stdio.py /app/scripts/paddock_mcp_stdio.py
 
 # TrueNAS runs apps as the "apps" user (568) by default. Give it the GPU groups at runtime

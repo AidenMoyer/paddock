@@ -51,6 +51,7 @@ class Settings:
     session_days: int
     allow_remote_pairing: bool
     dev_mode: bool
+    android_dir: Path
     extra: dict = field(default_factory=dict)
 
     @property
@@ -128,6 +129,8 @@ def load_settings() -> Settings:
         session_days=int(_env("SESSION_DAYS", "30")),
         allow_remote_pairing=_env_bool("ALLOW_REMOTE_PAIRING", False),
         dev_mode=_env_bool("DEV", False),
+        # the Android app bundled with this release (paddock.apk + release.json), handed out for in-app updates
+        android_dir=Path(_env("ANDROID_DIR", str(Path(__file__).resolve().parent.parent / "android-app"))),
     )
 
 

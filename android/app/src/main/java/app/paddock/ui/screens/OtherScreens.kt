@@ -34,6 +34,7 @@ import app.paddock.data.*
 import app.paddock.net.Mode
 import app.paddock.ui.*
 import app.paddock.ui.theme.LocalPaddock
+import app.paddock.update.Updater
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -313,7 +314,24 @@ fun YouScreen(nav: Nav) {
                 ToggleRow("Autoplay next video", autoplay) { autoplay = it; s.autoplay = it }
             }
         }
-        item { Text("Paddock for Android 0.1.0 · private, self-hosted", color = p.text3, style = MaterialTheme.typography.bodySmall) }
+        item {
+            val (version, _) = remember { Updater.installedVersion(ctx) }
+            val scope = rememberCoroutineScope()
+            var checking by remember { mutableStateOf(false) }
+            var note by remember { mutableStateOf("") }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Paddock for Android $version · private, self-hosted", color = p.text3, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                TextButton(enabled = !checking, onClick = {
+                    checking = true
+                    scope.launch {
+                        note = runCatching { if (Updater.check(app, manual = true) == null) "You have the latest version" else "" }
+                            .getOrElse { "Couldn't check: ${it.message}" }
+                        checking = false
+                    }
+                }) { Text(if (checking) "Checking…" else "Check for updates", color = p.link) }
+            }
+            if (note.isNotEmpty()) Text(note, color = p.text2, style = MaterialTheme.typography.bodySmall)
+        }
     }
 }
 

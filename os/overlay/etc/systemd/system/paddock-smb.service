@@ -1,0 +1,17 @@
+[Unit]
+Description=Paddock: mount network shares (SMB) used as libraries
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/srv/data
+Before=paddock.service
+ConditionKernelCommandLine=!paddock.installer
+ConditionPathExistsGlob=/srv/data/system/smb/*.json
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/local/sbin/paddock-agent --mount-smb
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

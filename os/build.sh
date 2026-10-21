@@ -157,7 +157,7 @@ log "Paddock $VERSION"
 in_chroot useradd --system --uid "$PADDOCK_UID" --user-group --home-dir /srv/data/paddock --no-create-home \
   --shell /usr/sbin/nologin --groups video,render paddock
 install -d "$ROOT/opt/paddock/app"
-cp -r "$REPO/server/paddock" "$ROOT/opt/paddock/app/"
+cp -r "$REPO/server/paddock" "$REPO/server/android-app" "$ROOT/opt/paddock/app/"
 find "$ROOT/opt/paddock/app" -name '__pycache__' -prune -exec rm -rf {} +
 cp "$REPO/server/requirements.txt" "$ROOT/tmp/requirements.txt"
 in_chroot python3 -m venv /opt/paddock/venv
@@ -190,7 +190,8 @@ install -d "$ROOT/srv/data" "$ROOT/srv/media"
 install -d "$ROOT/etc/network"   # live-boot writes an (unused) ifupdown file here at boot
 in_chroot passwd -l root >/dev/null
 in_chroot systemctl enable systemd-networkd systemd-resolved systemd-timesyncd \
-  paddock.service paddock-wg.service paddock-agent.socket paddock-installer.service paddock-console.service >/dev/null
+  paddock.service paddock-wg.service paddock-agent.socket paddock-installer.service paddock-console.service \
+  paddock-smb.service >/dev/null
 # tty1 belongs to the Paddock OS console (and to the installer on the ISO); logins stay on tty2-tty6
 in_chroot systemctl mask getty@tty1.service >/dev/null
 in_chroot /opt/paddock/venv/bin/python -m py_compile /usr/local/lib/paddock-console/console.py
@@ -210,7 +211,7 @@ find "$M/drivers/media" -mindepth 1 -maxdepth 1 ! -name cec ! -name mc -exec rm 
 # modules that belonged to removed subsystems just never load. The VM test boots the result.)
 in_chroot depmod -a "$KVER"
 # everything Paddock relies on must still load
-for m in i915 xe amdgpu ahci nvme e1000e igb igc r8169 ext4 xfs btrfs ntfs3 exfat vfat raid456 raid1 raid0 raid10 wireguard usb-storage uas squashfs overlay; do
+for m in i915 xe amdgpu ahci nvme e1000e igb igc r8169 ext4 xfs btrfs ntfs3 exfat vfat raid456 raid1 raid0 raid10 wireguard usb-storage uas squashfs overlay cifs; do
   in_chroot modprobe -S "$KVER" --show-depends "$m" >/dev/null || { echo "module $m is missing" >&2; exit 1; }
 done
 in_chroot update-initramfs -u -k "$KVER" >/dev/null

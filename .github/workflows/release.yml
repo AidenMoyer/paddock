@@ -78,7 +78,7 @@ jobs:
 
   images:
     name: Container images
-    needs: [version, tests, ffmpeg]
+    needs: [version, tests, ffmpeg, apk]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -89,6 +89,10 @@ jobs:
         with:
           name: paddock-ffmpeg
           path: ffmpeg/out
+      - uses: actions/download-artifact@v8
+        with:
+          name: android-app
+          path: server/android-app
       - name: build (and push on release tags)
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -107,7 +111,7 @@ jobs:
 
   iso:
     name: Paddock OS (${{ matrix.variant }})
-    needs: [version, ffmpeg]
+    needs: [version, ffmpeg, apk]
     if: startsWith(github.ref, 'refs/tags/v') || inputs.iso
     strategy:
       fail-fast: false
@@ -123,6 +127,10 @@ jobs:
         with:
           name: paddock-ffmpeg
           path: ffmpeg/out
+      - uses: actions/download-artifact@v8
+        with:
+          name: android-app
+          path: server/android-app
       - name: build tools
         run: |
           apt-get update -q
@@ -165,12 +173,22 @@ jobs:
           cd android
           ./gradlew --no-daemon assembleRelease -PversionName="${{ needs.version.outputs.version }}" -PversionCode="${{ needs.version.outputs.code }}"
           out="$(ls app/build/outputs/apk/release/*.apk | grep -v unsigned || ls app/build/outputs/apk/release/*.apk)"
-          mkdir -p ../dist && cp "$out" "../dist/paddock-${{ needs.version.outputs.version }}.apk"
+          mkdir -p ../dist ../bundle && cp "$out" "../dist/paddock-${{ needs.version.outputs.version }}.apk"
           rm -f "$RUNNER_TEMP/release.jks"
+          # the copy each server release carries for in-app updates
+          cp "$out" ../bundle/paddock.apk
+          printf '{"version_name": "%s", "version_code": %s, "sha256": "%s", "size": %s}\n' \
+            "${{ needs.version.outputs.version }}" "${{ needs.version.outputs.code }}" \
+            "$(sha256sum "$out" | cut -d' ' -f1)" "$(stat -c%s "$out")" > ../bundle/release.json
+          cat ../bundle/release.json
       - uses: actions/upload-artifact@v7
         with:
           name: apk
           path: dist/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android-app
+          path: bundle/
 
   publish:
     name: GitHub release
