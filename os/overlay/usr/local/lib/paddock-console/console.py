@@ -269,7 +269,8 @@ def collector() -> None:
 
 
 def addresses(net: dict) -> list[str]:
-    return [a.split("/")[0] for i in net.get("interfaces", []) for a in i.get("addresses", [])]
+    """IPv4 addresses only: Paddock listens on IPv4, and bare IPv6 addresses aren't clickable URLs."""
+    return [a.split("/")[0] for i in net.get("interfaces", []) for a in i.get("addresses", []) if ":" not in a]
 
 
 def draw(scr, unlocked: bool) -> None:
