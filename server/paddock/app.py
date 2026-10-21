@@ -12,8 +12,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, db, federation, jobs, mcp, portmap, tls, transcode, wireguard
-from .api import admin, assistant, auth, clients, federation as federation_api, libraries, media, party as party_api, projects, share, system as system_api, uploads, voice as voice_api
+from . import __version__, db, federation, jobs, mcp, portmap, public, tls, transcode, wireguard
+from .api import admin, assistant, auth, clients, federation as federation_api, libraries, media, party as party_api, projects, public_links, share, system as system_api, uploads, voice as voice_api
 from .api.deps import client_ip, network_zone
 from .config import settings
 
@@ -44,6 +44,7 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         heartbeat.start()
         renewer.start()
+        public.site.start()       # nothing listens until an admin turns public links on
     from .party import parties
 
     party_watchdog = asyncio.create_task(parties.watchdog())
@@ -52,6 +53,7 @@ async def lifespan(app: FastAPI):
     scheduler.stop.set()
     heartbeat.stop.set()
     renewer.stop.set()
+    public.site.shutdown()
     transcode.segments.stop_all()
     party_watchdog.cancel()
 
@@ -94,7 +96,7 @@ def create_app() -> FastAPI:
 
     for r in (auth.router, libraries.router, media.router, projects.router, uploads.router, admin.router,
               assistant.router, share.router, federation_api.router, system_api.router, party_api.router,
-              voice_api.router, clients.router, mcp.router):
+              voice_api.router, clients.router, public_links.router, mcp.router):
         app.include_router(r)
 
     @app.get("/api/health")

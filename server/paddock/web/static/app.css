@@ -624,7 +624,7 @@ body.dragging::after {
 .admin nav a:hover { background: var(--hover); }
 .admin nav a.active { background: var(--surface-2); font-weight: 500; }
 @media (max-width: 1016px) {
-  .admin { grid-template-columns: 1fr; }
+  .admin { grid-template-columns: minmax(0, 1fr); }
   .admin nav { flex-direction: row; overflow-x: auto; position: static; scrollbar-width: none; }
   .admin nav a { white-space: nowrap; }
 }

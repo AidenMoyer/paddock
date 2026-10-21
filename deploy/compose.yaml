@@ -9,6 +9,8 @@
 #
 # Only ONE port ever needs to reach the internet: UDP 51820 for the encrypted tunnel, and
 # Paddock can open it on your router itself (Manage server → Remote access). Never forward 8443.
+# Optional public links (Manage server → Public links) use TCP 8445 (HTTPS) and 8089 (certificate
+# checks) on the host; Paddock maps router ports 443/80 to them only when you turn that on.
 
 name: paddock
 

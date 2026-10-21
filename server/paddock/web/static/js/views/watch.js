@@ -7,6 +7,7 @@ import { addToProjectDialog, addToCollectionDialog, itemCard, thumbBox } from ".
 import { queue } from "../queue.js";
 import { Player, clientCodecs } from "../player.js";
 import { PartySync, partyPanel, startPartyDialog } from "../party.js";
+import { shareOnlineDialog } from "./publiclinks.js";
 import { h, icon, iconBtn, fmtDuration, fmtBytes, fmtDateTime, timeAgo, toast, menu, promptDialog, resLabel, copyText, LIB_ICON } from "../ui.js";
 
 export async function render(root, { match, query }) {
@@ -95,6 +96,7 @@ export async function render(root, { match, query }) {
     player && !partyId ? h("button", { class: "btn", onclick: () => startPartyDialog(item, player) }, icon("users"), "Watch together") : null,
     h("button", { class: "btn", onclick: () => addToProjectDialog([id]) }, icon("work"), "Add to project"),
     h("button", { class: "btn", onclick: share }, icon("share"), "Share"),
+    ctx.user.is_admin && ["video", "red_clip"].includes(item.kind) ? h("button", { class: "btn", onclick: () => shareOnlineDialog(item) }, icon("globe"), "Share online") : null,
     h("a", { class: "btn", href: `/api/items/${id}/file?download=1`, download: "" }, icon("download"), "Download"),
     moreBtn));
 

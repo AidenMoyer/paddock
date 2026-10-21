@@ -1,8 +1,8 @@
 """Automatic router port mapping (NAT-PMP, then UPnP-IGD) — no outside services involved.
 
-Paddock only ever maps ONE port: the WireGuard UDP port. The router also tells us
-our public IPv4 address, which phones and linked servers use to find home, so no
-"what is my IP" website or dynamic-DNS provider is needed.
+Paddock maps the WireGuard UDP port and, only if an admin turns on public links, TCP 443 and 80
+for the public-links listener. The router also tells us our public IPv4 address, which phones and
+linked servers use to find home, so no "what is my IP" website or dynamic-DNS provider is needed.
 
 Requires host networking (the default in deploy/compose.yaml) so multicast
 discovery and the router are reachable.
@@ -91,13 +91,15 @@ def _natpmp(gateway: str, payload: bytes, expect_len: int) -> bytes | None:
     return None
 
 
-def natpmp_map(gateway: str, port: int, lifetime: int = LEASE) -> tuple[str | None, int | None]:
+def natpmp_map(gateway: str, port: int, lifetime: int = LEASE, tcp: bool = False,
+               internal: int | None = None) -> tuple[str | None, int | None]:
     r = _natpmp(gateway, struct.pack("!BB", 0, 0), 12)
     ext_ip = None
     if r and r[1] == 128 and struct.unpack("!H", r[2:4])[0] == 0:
         ext_ip = socket.inet_ntoa(r[8:12])
-    r = _natpmp(gateway, struct.pack("!BBHHHI", 0, 1, 0, port, port, lifetime), 16)
-    if not r or r[1] != 129:
+    op = 2 if tcp else 1
+    r = _natpmp(gateway, struct.pack("!BBHHHI", 0, op, 0, internal or port, port, lifetime), 16)
+    if not r or r[1] != 128 + op:
         return ext_ip, None
     code = struct.unpack("!H", r[2:4])[0]
     if code != 0:
@@ -106,8 +108,8 @@ def natpmp_map(gateway: str, port: int, lifetime: int = LEASE) -> tuple[str | No
     return ext_ip, mapped
 
 
-def natpmp_unmap(gateway: str, port: int) -> None:
-    _natpmp(gateway, struct.pack("!BBHHHI", 0, 1, 0, port, 0, 0), 16)
+def natpmp_unmap(gateway: str, port: int, tcp: bool = False) -> None:
+    _natpmp(gateway, struct.pack("!BBHHHI", 0, 2 if tcp else 1, 0, port, 0, 0), 16)
 
 
 # ---- UPnP IGD ------------------------------------------------------------------------------
@@ -171,7 +173,8 @@ def _soap(ctl: str, st: str, action: str, args: dict) -> str:
     return _fetch(ctl, env, {"Content-Type": 'text/xml; charset="utf-8"', "SOAPAction": f'"{st}#{action}"'}).decode(errors="ignore")
 
 
-def upnp_map(port: int, internal_ip: str) -> tuple[str | None, str]:
+def upnp_map(port: int, internal_ip: str, tcp: bool = False, internal: int | None = None,
+             label: str = "Paddock tunnel") -> tuple[str | None, str]:
     for loc in _ssdp_discover():
         try:
             found = _control_url(loc)
@@ -186,9 +189,9 @@ def upnp_map(port: int, internal_ip: str) -> tuple[str | None, str]:
             ext = m.group(1) if m else None
         except Exception:  # noqa: BLE001
             pass
-        args = {"NewRemoteHost": "", "NewExternalPort": port, "NewProtocol": "UDP", "NewInternalPort": port,
-                "NewInternalClient": internal_ip, "NewEnabled": 1, "NewPortMappingDescription": "Paddock tunnel",
-                "NewLeaseDuration": LEASE}
+        args = {"NewRemoteHost": "", "NewExternalPort": port, "NewProtocol": "TCP" if tcp else "UDP",
+                "NewInternalPort": internal or port, "NewInternalClient": internal_ip, "NewEnabled": 1,
+                "NewPortMappingDescription": label, "NewLeaseDuration": LEASE}
         try:
             _soap(ctl, st, "AddPortMapping", args)
         except Exception:  # noqa: BLE001 - some routers only accept permanent leases
@@ -230,6 +233,60 @@ def refresh() -> dict:
         _state.update(method="NAT-PMP/UPnP", ok=False, gateway=gw, error="; ".join(errors) or "no router found",
                       updated=time.time())
         return state()
+
+
+_public: dict = {"ok": False, "method": None, "error": None, "updated": None, "ports": []}
+
+
+def public_state() -> dict:
+    return dict(_public)
+
+
+def map_public(ports: list[tuple[int, int]]) -> dict:
+    """Map TCP ports (external, internal) for the public-links listener. Safe to call repeatedly."""
+    with _lock:
+        gw = default_gateway()
+        errors = []
+        if gw:
+            try:
+                ok = True
+                for ext, internal in ports:
+                    ip, mapped = natpmp_map(gw, ext, tcp=True, internal=internal)
+                    if ip:
+                        _state["external_ip"] = ip
+                    ok = ok and mapped == ext
+                if ok:
+                    _public.update(ok=True, method="NAT-PMP", error=None, updated=time.time(), ports=ports)
+                    _persist()
+                    return public_state()
+                errors.append("NAT-PMP: the router gave different outside ports")
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"NAT-PMP: {e}")
+        ip = lan_ip()
+        if ip:
+            try:
+                for ext, internal in ports:
+                    pub, _ = upnp_map(ext, ip, tcp=True, internal=internal, label="Paddock public links")
+                    if pub:
+                        _state["external_ip"] = pub
+                _public.update(ok=True, method="UPnP", error=None, updated=time.time(), ports=ports)
+                _persist()
+                return public_state()
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"UPnP: {e}")
+        _public.update(ok=False, method=None, error="; ".join(errors) or "no router found", updated=time.time(), ports=ports)
+        return public_state()
+
+
+def unmap_public() -> None:
+    gw = default_gateway()
+    if gw:
+        for ext, _ in _public.get("ports") or []:
+            try:
+                natpmp_unmap(gw, ext, tcp=True)
+            except Exception:  # noqa: BLE001
+                pass
+    _public.update(ok=False, method=None, ports=[])
 
 
 def _persist() -> None:

@@ -3,6 +3,7 @@
 import { api, qs } from "../api.js";
 import { ctx, navigate, refreshLibraries, setTitle } from "../app.js";
 import { pairDialog } from "./account.js";
+import { publicPage } from "./publiclinks.js";
 import {
   h, icon, iconBtn, clear, emptyState, fmtBytes, fmtDateTime, timeAgo, toast, modal, field, confirmDialog, switchEl, copyText,
   loader, LIB_ICON,
@@ -10,7 +11,7 @@ import {
 
 const SECTIONS = [
   ["overview", "dashboard", "Overview"], ["system", "sd", "System & drives"], ["libraries", "folderOpen", "Libraries"], ["users", "users", "Users"],
-  ["devices", "phone", "Devices"], ["remote", "lan", "Remote access"], ["servers", "layers", "Linked servers & backup"],
+  ["devices", "phone", "Devices"], ["remote", "lan", "Remote access"], ["public", "globe", "Public links"], ["servers", "layers", "Linked servers & backup"],
   ["assistant", "sparkle", "Assistant (AI)"], ["agents", "key", "AI agents (MCP)"], ["transcoding", "bolt", "Transcoding"],
   ["transcription", "cc", "Transcription"], ["printers", "printer", "3D printers"], ["jobs", "refresh", "Jobs"],
   ["security", "shield", "Security & audit"], ["general", "settings", "General"],
@@ -27,7 +28,7 @@ export async function render(root, { match }) {
   const nav = h("nav", null, SECTIONS.map(([id, ic, label]) => h("a", { href: `/admin/${id}`, class: id === section ? "active" : "" }, icon(ic, "sm"), label)));
   const body = h("div", { class: "admin-body" });
   root.append(h("div", { class: "admin" }, nav, body));
-  const fn = { overview, system: systemPage, libraries, users, devices, remote, servers, assistant, agents, transcoding, transcription, printers, jobs, security, general }[section];
+  const fn = { overview, system: systemPage, libraries, users, devices, remote, public: (c) => publicPage(c, timers), servers, assistant, agents, transcoding, transcription, printers, jobs, security, general }[section];
   body.append(loader());
   const content = h("div");
   await fn(content);

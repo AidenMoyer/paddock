@@ -50,8 +50,9 @@ building a RAID 1 pool) before it's published.
 | **Watch** | Movies, shows (seasons/episodes), music (albums, mini-player), home videos. Player with **Auto** (adaptive), **Original** (untouched bitstream) and 4K→360p quality you can switch any time; GPU transcoding (NVENC / Quick Sync / VAAPI) with automatic CPU fallback; segment cache, encode-ahead with throttling, optional pre-transcode; scrub previews; resume; PiP; keyboard shortcuts. Originals are never modified. |
 | **Watch parties** | Watch together with friends and family wherever they are: one shared clock keeps every player in step through play, pause, skips and moving to the next video, waits for anyone who's buffering, and everyone streams in their own quality. Chat, emoji reactions over the video, invite links, and a *happening now* list on Home. |
 | **Voice chat** | Built into Paddock, no outside service: echo-cancelled microphone audio as Opus, relayed by your server over the same connection the app already uses (at home or through the tunnel). Mute, deafen, talking indicators, and the movie ducks while friends talk. Voice rooms are generic, so future features can use them too. |
+| **Public links** | Let people outside your home watch one video in any browser, with no account or app: your own domain, a free Let's Encrypt certificate Paddock gets and renews itself, a password per link, expiry, viewer limit, and lockouts against guessing. A separate listener serves only these pages, so nothing else of Paddock is reachable from the internet. |
 | **Live captions** | Local Whisper transcribes just ahead of the playhead on web and Android; finished transcripts make *spoken words searchable*. |
-| **Photos** | Phone backup (resumable, deduplicated, keeps GPS), day timeline, “On this day”, places (no map service), full-screen viewer. |
+| **Photos** | Phone backup (resumable, deduplicated, keeps GPS, and the app tells you why something didn't upload), day timeline, “On this day”, places (no map service), full-screen viewer. |
 | **RED / cinema** | R3D clips cataloged as one item (all spans), camera/reel/clip from names, RMD look data, REDline metadata & proxies when installed, BRAW, shoot-day clip logs, verified **card offload** with checksums. |
 | **Engineering** | STL/3MF/OBJ/STEP/IGES/SolidWorks/Fusion/FreeCAD/DXF/G-code/KiCad. Server-rendered thumbnails, WebGL 3D viewer, G-code toolpath preview, print stats, STEP header data, **part families** (all revisions + exports), drop-folder **auto-filing**, send G-code to Klipper/OctoPrint, expiring share links. |
 | **Projects** | Gather footage, photos, audio, CAD and notes per build/trip; day-by-day timeline; **AI video plan** (hook, beats, shot list mapped to your clips, missing shots, voice-over, music). |
@@ -116,6 +117,13 @@ then UPnP) to forward the WireGuard UDP port and learns your public IP from the 
 Never forward 8443; Paddock refuses web requests from the internet anyway. Behind CGNAT, link a Paddock Node
 that has a public address, or ask your ISP for a public IPv4.
 
+### Public links (optional)
+*Manage server → Public links*: enter a name on a domain you own (e.g. `videos.example.com`), point its DNS
+A record at your home's public address (shown on that page), accept the Let's Encrypt agreement, and turn it
+on. Paddock opens TCP 443 → 8445 and TCP 80 → 8089 on your router (or forward those yourself), gets the
+certificate, and renews it. Then **Share online** on any video creates a link with its own password. Viewers
+get up to 1080p; your home upload speed is the limit. Behind CGNAT this can't work.
+
 ### Phone
 Install `paddock-<version>.apk` from the [latest release](https://github.com/AidenMoyer/paddock/releases/latest)
 (allow installing apps from your browser when Android asks), then on your home Wi-Fi: *Your account → Connect a
@@ -123,6 +131,14 @@ phone* → scan. If you had a self-built test version installed, uninstall it fi
 with a different key. The app pins the server's certificate from the QR code,
 generates its own tunnel key, and from then on picks the LAN at home and its **app-only tunnel** elsewhere
 (Android asks once to allow the VPN; only Paddock's traffic uses it, and it can only reach Paddock).
+Every server release carries the matching app, so the app offers updates on its own (or *You → Check for
+updates*); the first install can also come straight from the server at `https://<server>/download/android`.
+
+### Network shares (Paddock OS)
+*Manage server → System & drives → Network shares* (or **Connect a network share** in the folder picker):
+enter the computer, the shared folder and a login. The share appears under `/srv/media/<name>`, ready to add
+as a library, and reconnects at every start. Read-only unless you turn that off. The password is stored
+readable by root only. On TrueNAS or Docker, mount shares on the host and pass them in as volumes instead.
 
 ### Local AI (Qwen3.8 27B)
 Install the TrueNAS **Ollama** app with your GPU and these env vars:

@@ -215,6 +215,23 @@ CREATE TABLE IF NOT EXISTS share_links (
     label TEXT
 );
 
+-- videos shared on the internet with a password (public.py)
+CREATE TABLE IF NOT EXISTS public_links (
+    id INTEGER PRIMARY KEY,
+    token TEXT NOT NULL UNIQUE,
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at REAL NOT NULL,
+    expires_at REAL,
+    password_hash TEXT NOT NULL,
+    allow_download INTEGER NOT NULL DEFAULT 0,
+    label TEXT,
+    views INTEGER NOT NULL DEFAULT 0,
+    last_view_at REAL,
+    revoked_at REAL,
+    locked_until REAL
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY,
     ts REAL NOT NULL,

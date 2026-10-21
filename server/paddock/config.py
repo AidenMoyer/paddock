@@ -52,6 +52,9 @@ class Settings:
     allow_remote_pairing: bool
     dev_mode: bool
     android_dir: Path
+    public_port: int
+    acme_port: int
+    acme_directory: str
     extra: dict = field(default_factory=dict)
 
     @property
@@ -131,6 +134,10 @@ def load_settings() -> Settings:
         dev_mode=_env_bool("DEV", False),
         # the Android app bundled with this release (paddock.apk + release.json), handed out for in-app updates
         android_dir=Path(_env("ANDROID_DIR", str(Path(__file__).resolve().parent.parent / "android-app"))),
+        # public links (off until an admin turns them on): HTTPS for viewers, HTTP for Let's Encrypt's check
+        public_port=int(_env("PUBLIC_PORT", "8445")),
+        acme_port=int(_env("ACME_PORT", "8089")),
+        acme_directory=_env("ACME_DIRECTORY", "https://acme-v02.api.letsencrypt.org/directory"),
     )
 
 
