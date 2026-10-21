@@ -20,4 +20,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Paddock"
-include(":app")
+include(":app", ":core", ":desktop")

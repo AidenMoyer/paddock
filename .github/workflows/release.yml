@@ -190,9 +190,78 @@ jobs:
           name: android-app
           path: bundle/
 
+  desktop:
+    name: Desktop app (${{ matrix.label }})
+    needs: [version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows
+            os: windows-latest
+            task: packageMsi
+          - label: Linux
+            os: ubuntu-24.04
+            task: packageDeb
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: bundle libVLC (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # the official VideoLAN build, pinned by its published SHA-256; only what playback needs
+          curl -fsSL -o vlc.zip https://download.videolan.org/pub/videolan/vlc/3.0.21/win64/vlc-3.0.21-win64.zip
+          echo "a0b7ec02b50adf6417eed014fb8df50af39690505a4225b85b3dc2ed17d14843  vlc.zip" | sha256sum -c -
+          unzip -q vlc.zip
+          dst=android/desktop/resources/windows/vlc
+          mkdir -p "$dst/plugins"
+          cp vlc-3.0.21/libvlc.dll vlc-3.0.21/libvlccore.dll vlc-3.0.21/COPYING.txt "$dst/"
+          for d in access audio_filter audio_mixer audio_output codec d3d9 d3d11 demux misc packetizer spu stream_filter \
+                   text_renderer video_chroma video_filter video_output; do
+            cp -r "vlc-3.0.21/plugins/$d" "$dst/plugins/"
+          done
+          du -sh "$dst"
+      - name: build the installer
+        shell: bash
+        working-directory: android
+        run: ./gradlew --no-daemon --stacktrace :desktop:${{ matrix.task }} -PversionName="${{ needs.version.outputs.version }}"
+      - name: depend on the system's VLC (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          deb="$(ls android/desktop/build/compose/binaries/main/deb/*.deb)"
+          mkdir pkg && dpkg-deb -R "$deb" pkg
+          if grep -q '^Depends:' pkg/DEBIAN/control; then
+            sed -i 's/^Depends: \(.*\)$/Depends: \1, libvlc5, vlc-plugin-base/' pkg/DEBIAN/control
+          else
+            echo 'Depends: libvlc5, vlc-plugin-base' >> pkg/DEBIAN/control
+          fi
+          dpkg-deb -b --root-owner-group pkg "$deb"
+          dpkg-deb -I "$deb" | grep -E 'Package|Version|Depends'
+      - name: collect
+        shell: bash
+        run: |
+          v="${{ needs.version.outputs.version }}"
+          mkdir -p dist
+          for f in android/desktop/build/compose/binaries/main/*/*; do
+            case "$f" in
+              *.msi) cp "$f" "dist/paddock-$v-windows-x64.msi" ;;
+              *.deb) cp "$f" "dist/paddock-$v-linux-amd64.deb" ;;
+            esac
+          done
+          ls -la dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ runner.os }}
+          path: dist/
+
   publish:
     name: GitHub release
-    needs: [version, images, iso, apk]
+    needs: [version, images, iso, apk, desktop]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
@@ -209,7 +278,8 @@ jobs:
         run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           mkdir dist
-          cp artifacts/iso-standard/*.iso artifacts/iso-nvidia/*.iso artifacts/iso-standard/*.squashfs artifacts/iso-nvidia/*.squashfs artifacts/apk/*.apk dist/
+          cp artifacts/iso-standard/*.iso artifacts/iso-nvidia/*.iso artifacts/iso-standard/*.squashfs artifacts/iso-nvidia/*.squashfs artifacts/apk/*.apk \
+            artifacts/desktop-Windows/*.msi artifacts/desktop-Linux/*.deb dist/
           sed -e "s|ghcr.io/aidenmoyer/paddock:latest|ghcr.io/$owner/paddock:$VERSION|" \
               -e "s|ghcr.io/aidenmoyer/paddock-wg:latest|ghcr.io/$owner/paddock-wg:$VERSION|" \
               deploy/compose.yaml > "dist/paddock-truenas-$VERSION.yaml"
@@ -225,7 +295,9 @@ jobs:
           | \`paddock-os-$VERSION-amd64.iso\` | **Paddock OS**: a minimal Linux that runs Paddock and nothing else. Intel and AMD GPU transcoding. Write it to a USB stick (balenaEtcher, Rufus in DD mode, or \`dd\`), boot, choose *Install*. |
           | \`paddock-os-nvidia-$VERSION-amd64.iso\` | The same, plus the NVIDIA driver (GTX 900-series and newer) for NVENC/NVDEC transcoding. |
           | \`paddock-truenas-$VERSION.yaml\` | TrueNAS SCALE: *Apps → Discover Apps → ⋮ → Install via YAML*, paste, edit the marked lines. |
-          | \`paddock-$VERSION.apk\` | Android app (Android 8+). |
+          | \`paddock-$VERSION.apk\` | Android app (Android 8+). Phones also update themselves from your server. |
+          | \`paddock-$VERSION-windows-x64.msi\` | Windows app (10 and 11). Video playback is built in. |
+          | \`paddock-$VERSION-linux-amd64.deb\` | Linux app (Debian, Ubuntu and similar). Installs VLC for video playback. |
           | \`paddock-node-$VERSION.yaml\` | Paddock Node, the backup/partner server (any Docker host). |
 
           Container images: \`ghcr.io/$owner/paddock:$VERSION\` and \`ghcr.io/$owner/paddock-wg:$VERSION\`.

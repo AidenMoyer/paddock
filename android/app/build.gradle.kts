@@ -47,6 +47,8 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+    // pure-Compose code shared with the desktop app (theme generated from design/tokens.json)
+    sourceSets["main"].java.srcDir("../shared-ui/src/main/kotlin")
     packaging {
         jniLibs { useLegacyPackaging = true }   // WireGuard's Go backend ships native libs
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
@@ -54,6 +56,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core"))
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.2")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.09.02")

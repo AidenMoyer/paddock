@@ -285,7 +285,7 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
                     }
                     if (!item.tags.isNullOrEmpty()) {
                         LazyRow(contentPadding = PaddingValues(16.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            items(item.tags) { t -> Text("#$t", color = p.text2, style = MaterialTheme.typography.labelMedium,
+                            items(item.tags!!) { t -> Text("#$t", color = p.text2, style = MaterialTheme.typography.labelMedium,
                                 modifier = Modifier.clip(RoundedCornerShape(14.dp)).background(p.surface2).clickable { nav.go("search?q=$t") }.padding(horizontal = 10.dp, vertical = 4.dp)) }
                         }
                     } else Spacer(Modifier.height(12.dp))

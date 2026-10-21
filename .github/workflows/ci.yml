@@ -47,5 +47,5 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - run: ./gradlew --no-daemon --stacktrace assembleDebug
+      - run: ./gradlew --no-daemon --stacktrace assembleDebug :core:test :desktop:compileKotlin
         working-directory: android

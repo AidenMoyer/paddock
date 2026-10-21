@@ -117,6 +117,15 @@ then UPnP) to forward the WireGuard UDP port and learns your public IP from the 
 Never forward 8443; Paddock refuses web requests from the internet anyway. Behind CGNAT, link a Paddock Node
 that has a public address, or ask your ISP for a public IPv4.
 
+### Windows and Linux
+Install `paddock-<version>-windows-x64.msi` or `paddock-<version>-linux-amd64.deb` (`sudo apt install ./paddock-…deb`
+pulls in VLC for playback) from the [latest release](https://github.com/AidenMoyer/paddock/releases/latest).
+On your home network, open Paddock in a browser → *Your account → Connect a device* → **Connecting a computer?
+Copy the code**, and paste it into the app. It has Home, videos, photos (scroll, swipe or use the arrow keys),
+music, watch parties with chat and reactions, and voice chat that stays on while you move around the app. Away
+from home, *Settings → Save tunnel file* and import it into the [WireGuard app](https://www.wireguard.com/install/);
+its only route is your Paddock server.
+
 ### Public links (optional)
 *Manage server → Public links*: enter a name on a domain you own (e.g. `videos.example.com`), point its DNS
 A record at your home's public address (shown on that page), accept the Let's Encrypt agreement, and turn it
@@ -195,12 +204,14 @@ publishes all of the above.
 
 ## Layout
 ```
-design/            tokens.json → web CSS variables + Android Compose theme (one look everywhere)
+design/            tokens.json → web CSS variables + Compose theme for Android and desktop (one look everywhere)
 server/paddock/    FastAPI app: scanner, probe (ffprobe/EXIF/tags), red, engineering, stlrender, thumbs,
                    transcode (ladder/HLS/GPU/cache), transcribe, ai, tools (agent tool surface), mcp,
                    federation, vault, backup, portmap, wireguard, tls, security, api/*, web/ (SPA)
 server/tests/      end-to-end tests with generated media (ffmpeg/Pillow)
-android/           native Kotlin/Compose app (ExoPlayer, WireGuard, WorkManager backup)
+android/           Kotlin apps: app/ (Android: ExoPlayer, WireGuard, WorkManager backup), desktop/ (Windows and
+                   Linux: Compose for Desktop, libVLC), core/ (shared: models, pinned TLS, API, party and voice
+                   protocols), shared-ui/ (shared Compose theme)
 deploy/            Dockerfile, TrueNAS compose, WireGuard sidecar, Paddock Node (Docker/Windows)
 ffmpeg/            Paddock's own FFmpeg build (official sources, only what Paddock uses)
 os/                Paddock OS: package list, system files, installer, root agent, ISO build, VM tests

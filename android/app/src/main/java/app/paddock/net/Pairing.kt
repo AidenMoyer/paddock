@@ -16,12 +16,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.UUID
 
 object Pairing {
-    fun parse(qr: String): PairPayload {
-        val p = runCatching { PaddockJson.decodeFromString<PairPayload>(qr) }.getOrNull()
-            ?: throw IllegalArgumentException("That isn't a Paddock pairing code.")
-        if (p.app != "paddock" || p.pin.isNullOrBlank() || p.lan.isEmpty()) throw IllegalArgumentException("That isn't a Paddock pairing code.")
-        return p
-    }
+    fun parse(qr: String): PairPayload = PairCode.parse(qr)
 
     /**
      * Pair over the home network: verify the server against the pinned CA from the QR code, generate
@@ -55,7 +50,7 @@ object Pairing {
                         name = res.server.name,
                         lanUrls = lan,
                         caPem = ca,
-                        pin = p.pin,
+                        pin = p.pin!!,
                         tokenEnc = Secure.encrypt(res.token),
                         deviceId = res.device_id,
                         user = res.user,

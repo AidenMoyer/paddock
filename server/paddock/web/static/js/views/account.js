@@ -84,10 +84,22 @@ export async function pairDialog(onDone) {
       h("li", null, "Make sure the phone is on your home Wi-Fi."),
       h("li", null, "Open the app, tap ", h("b", null, "Scan pairing code"), ", and point it at this code.")),
     qr, h("div", { class: "muted small" }, left),
+    computerCode(p),
     h("div", { class: "callout", style: { textAlign: "left", width: "100%" } }, icon("shield"),
       h("div", { class: "small" }, "The code works once, for 10 minutes, and only on your home network. It also carries this server's certificate fingerprint so the app can't be tricked into talking to anything else.",
         p.wg ? " Remote access: on." : " Remote access isn't configured yet — the phone will work at home only until an admin enables it in Manage server → Remote access."))),
   { onclose: () => { clearInterval(timer); onDone?.(); } });
+}
+
+/** The same pairing code as text, for the Windows and Linux apps (no camera to scan with). */
+function computerCode(payload) {
+  const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  const code = `PADDOCK-${btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
+  return h("details", { class: "computer-code", style: { width: "100%", textAlign: "left" } },
+    h("summary", { class: "small" }, "Connecting a computer? Copy the code instead"),
+    h("p", { class: "muted small" }, "In the Paddock app for Windows or Linux, paste this code. It works once, for the same 10 minutes."),
+    h("div", { class: "row" }, h("code", { class: "mono small", style: { flex: 1, wordBreak: "break-all", maxHeight: "4.5em", overflow: "hidden" } }, code),
+      h("button", { class: "btn sm", onclick: () => { copyText(code); toast("Code copied"); } }, icon("copy", "sm"), "Copy")));
 }
 
 async function drawShares(panel) {

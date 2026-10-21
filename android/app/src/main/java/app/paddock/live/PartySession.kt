@@ -11,7 +11,6 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import app.paddock.PaddockApp
 import app.paddock.data.PaddockJson
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -24,18 +23,6 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import kotlin.math.abs
 
-@Serializable data class PartyState(val item_id: Int = 0, val title: String = "", val playing: Boolean = false,
-    val intent_playing: Boolean = false, val position: Double = 0.0, val at: Double = 0.0, val rate: Double = 1.0,
-    val hold: Boolean = false, val waiting_for: List<String> = emptyList())
-@Serializable data class PartyMember(val user_id: Int, val username: String, val buffering: Boolean = false,
-    val host: Boolean = false, val devices: Int = 1)
-@Serializable data class PartyInfo(val id: String, val host: String = "", val host_id: Int = 0, val item_id: Int = 0,
-    val title: String = "", val everyone: Boolean = true, val control: String = "everyone",
-    val members: List<PartyMember> = emptyList(), val state: PartyState? = null)
-data class ChatLine(val user: String?, val text: String)
-data class Reaction(val emoji: String, val user: String, val key: Long)
-
-val REACTIONS = listOf("😂", "❤️", "😮", "👏", "😢", "🔥", "👀", "🎉")
 
 /**
  * One phone's place in a watch party: follows the server's playback clock with the shared ExoPlayer and
@@ -57,7 +44,7 @@ class PartySession(val id: String, private val player: ExoPlayer, private var it
     private val main = Handler(Looper.getMainLooper())
     private var ws: WebSocket? = null
     private var state: PartyState? = null
-    private val offsets = ArrayDeque<Double>()
+    private val clock = PartyClock()
     private var suppressUntil = 0L
     private var buffering = false
     private var closed = false
@@ -118,11 +105,7 @@ class PartySession(val id: String, private val player: ExoPlayer, private var it
         main.postDelayed({ if (!closed) connect() }, 1500)
     }
 
-    private fun serverNow(): Double {
-        val now = System.currentTimeMillis() / 1000.0
-        if (offsets.isEmpty()) return now
-        return now + offsets.sorted()[offsets.size / 2]
-    }
+    private fun serverNow(): Double = clock.now()
 
     private fun ping() = send("ping") { put("t0", System.currentTimeMillis() / 1000.0) }
 
@@ -134,16 +117,13 @@ class PartySession(val id: String, private val player: ExoPlayer, private var it
         val msg = runCatching { PaddockJson.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
         when (msg["type"]?.jsonPrimitive?.content) {
             "pong" -> {
-                val t0 = msg["t0"]!!.jsonPrimitive.content.toDouble()
-                val t1 = System.currentTimeMillis() / 1000.0
-                offsets.addLast(msg["server"]!!.jsonPrimitive.content.toDouble() - (t0 + (t1 - t0) / 2))
-                while (offsets.size > 7) offsets.removeFirst()
+                clock.pong(msg["t0"]!!.jsonPrimitive.content.toDouble(), msg["server"]!!.jsonPrimitive.content.toDouble())
             }
             "hello" -> {
                 myUserId = msg["you"]!!.jsonObject["user_id"]!!.jsonPrimitive.content.toInt()
                 myName = msg["you"]!!.jsonObject["username"]!!.jsonPrimitive.content
                 canControl.value = msg["can_control"]?.jsonPrimitive?.content == "true"
-                offsets.clear(); offsets.addLast(msg["server"]!!.jsonPrimitive.content.toDouble() - System.currentTimeMillis() / 1000.0)
+                clock.hello(msg["server"]!!.jsonPrimitive.content.toDouble())
                 val p = PaddockJson.decodeFromJsonElement<PartyInfo>(msg["party"]!!)
                 info.value = p
                 members.clear(); members.addAll(p.members)
@@ -183,10 +163,7 @@ class PartySession(val id: String, private val player: ExoPlayer, private var it
         correct(true)
     }
 
-    private fun target(s: PartyState): Double {
-        val now = serverNow()
-        return if (s.playing && now > s.at) s.position + (now - s.at) * s.rate else s.position
-    }
+    private fun target(s: PartyState): Double = clock.target(s)
 
     /** Steer the local player toward the shared clock: small drift by speed, big drift by seeking. */
     private fun correct(force: Boolean) {

@@ -4,7 +4,7 @@
 
 Outputs:
   server/paddock/web/static/tokens.css
-  android/app/src/main/java/app/paddock/ui/theme/Tokens.kt
+  android/shared-ui/src/main/kotlin/app/paddock/ui/theme/Tokens.kt (Android and desktop apps)
 """
 
 import json
@@ -90,7 +90,7 @@ def kotlin() -> str:
 
 if __name__ == "__main__":
     css_out = ROOT / "server" / "paddock" / "web" / "static" / "tokens.css"
-    kt_out = ROOT / "android" / "app" / "src" / "main" / "java" / "app" / "paddock" / "ui" / "theme" / "Tokens.kt"
+    kt_out = ROOT / "android" / "shared-ui" / "src" / "main" / "kotlin" / "app" / "paddock" / "ui" / "theme" / "Tokens.kt"
     css_out.write_text(css(), encoding="utf-8")
     kt_out.parent.mkdir(parents=True, exist_ok=True)
     kt_out.write_text(kotlin(), encoding="utf-8")

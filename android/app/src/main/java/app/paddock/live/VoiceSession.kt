@@ -21,7 +21,6 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import app.paddock.PaddockApp
 import app.paddock.data.PaddockJson
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonObject
@@ -39,8 +38,6 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
 
-@Serializable data class VoiceMember(val id: Int, val user_id: Int, val username: String, val muted: Boolean = false,
-    val deafened: Boolean = false, val speaking: Boolean = false, val codec: String = "opus")
 
 /**
  * Voice chat built into Paddock (the server relays frames, see server/paddock/voice.py).
@@ -65,8 +62,8 @@ class VoiceSession(val room: String) {
     private var track: AudioTrack? = null
     private var encoder: MediaCodec? = null
     private val decoders = HashMap<Int, MediaCodec>()
-    private val queues = HashMap<Int, ArrayDeque<ShortArray>>()
-    private val started = HashMap<Int, Boolean>()
+    private val mixer = VoiceMixer()
+    private val gate = VoiceGate()
     @Volatile private var running = false
     @Volatile private var talking = false
     private var codec = "pcm16"
@@ -150,8 +147,6 @@ class VoiceSession(val room: String) {
     // ---- capture ------------------------------------------------------------------------------------
     private fun captureLoop() {
         val frame = ShortArray(FRAME)
-        var floor = -1.0
-        var lastVoice = 0L
         while (running) {
             var n = 0
             while (n < FRAME && running) {
@@ -160,14 +155,9 @@ class VoiceSession(val room: String) {
                 n += r
             }
             if (n < FRAME) continue
-            var sum = 0.0
-            for (s in frame) sum += (s / 32768.0) * (s / 32768.0)
-            val rms = sqrt(sum / FRAME)
-            main.post { level.floatValue = min(1f, (rms * 8).toFloat()) }
-            floor = if (floor < 0) rms else min(max(floor * 1.002, 0.0005), max(rms, floor * 0.995))
-            val now = System.currentTimeMillis()
-            if (rms > max(0.008, floor * 2.5)) lastVoice = now
-            val active = !muted.value && now - lastVoice < 400
+            val active = gate.active(frame, muted.value)
+            val lvl = gate.level
+            main.post { level.floatValue = lvl }
             if (active != talking) {
                 talking = active
                 text { put("type", "speaking"); put("value", active) }
@@ -200,42 +190,23 @@ class VoiceSession(val room: String) {
         }
     }
 
-    private fun sendPcm16(frame: ShortArray) {
-        val out = ByteBuffer.allocate(FRAME / 3 * 2).order(ByteOrder.LITTLE_ENDIAN)
-        for (i in 0 until FRAME / 3) out.putShort(((frame[i * 3] + frame[i * 3 + 1] + frame[i * 3 + 2]) / 3).toShort())
-        sendFrame(CODEC_PCM16, out.array())
-    }
+    private fun sendPcm16(frame: ShortArray) = sendFrame(CODEC_PCM16, VoiceWire.toPcm16(frame))
 
     private fun sendFrame(c: Int, payload: ByteArray) {
-        val frame = ByteArray(3 + payload.size)
-        frame[0] = c.toByte(); frame[1] = (seq shr 8).toByte(); frame[2] = seq.toByte()
-        payload.copyInto(frame, 3)
+        ws?.send(VoiceWire.frame(c, seq, payload).toByteString())
         seq = (seq + 1) and 0xffff
-        ws?.send(frame.toByteString())
     }
 
     // ---- playback ----------------------------------------------------------------------------------
-    private fun onAudio(d: ByteArray) { synchronized(queues) { onAudioLocked(d) } }
-
-    private fun onAudioLocked(d: ByteArray) {
-        if (!running || d.size < 6 || deafened.value) return
-        val id = ((d[0].toInt() and 255) shl 8) or (d[1].toInt() and 255)
-        val c = d[2].toInt()
-        val payload = d.copyOfRange(5, d.size)
-        val pcm: List<ShortArray> = when (c) {
-            CODEC_OPUS -> decodeOpus(id, payload)
-            CODEC_PCM16 -> {
-                val src = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-                val up = ShortArray(src.remaining() * 3)
-                for (i in 0 until src.remaining()) { val s = src.get(i); up[i * 3] = s; up[i * 3 + 1] = s; up[i * 3 + 2] = s }
-                listOf(up)
-            }
+    private fun onAudio(d: ByteArray) {
+        if (!running || deafened.value) return
+        val f = VoiceWire.parse(d) ?: return
+        val pcm: List<ShortArray> = when (f.codec) {
+            CODEC_OPUS -> synchronized(decoders) { decodeOpus(f.speaker, f.payload) }
+            CODEC_PCM16 -> listOf(VoiceWire.fromPcm16(f.payload))
             else -> emptyList()
         }
-        if (pcm.isEmpty()) return
-        val q = queues.getOrPut(id) { ArrayDeque() }
-        pcm.forEach { q.addLast(it) }
-        while (q.size > 20) q.removeFirst()              // more than 400 ms behind: catch up
+        pcm.forEach { mixer.add(f.speaker, it) }
     }
 
     private fun decodeOpus(id: Int, packet: ByteArray): List<ShortArray> {
@@ -274,27 +245,9 @@ class VoiceSession(val room: String) {
     }
 
     private fun mixLoop() {
-        val acc = IntArray(FRAME)
         val mix = ShortArray(FRAME)
         while (running) {
-            acc.fill(0)
-            synchronized(queues) {
-                for ((id, q) in queues) {
-                    if (started[id] != true && q.size >= 3) started[id] = true     // ~60 ms cushion before starting
-                    if (started[id] != true) continue
-                    var need = FRAME
-                    var at = 0
-                    while (need > 0) {
-                        val f = q.firstOrNull() ?: break
-                        val take = min(need, f.size)
-                        for (i in 0 until take) acc[at + i] += f[i].toInt()
-                        if (take == f.size) q.removeFirst() else q[0] = f.copyOfRange(take, f.size)
-                        need -= take; at += take
-                    }
-                    if (need > 0) started[id] = false                              // ran dry: rebuffer
-                }
-            }
-            for (i in 0 until FRAME) mix[i] = acc[i].coerceIn(-32768, 32767).toShort()
+            mixer.mix(mix)
             if (deafened.value) mix.fill(0)
             track?.write(mix, 0, FRAME)                                             // blocks: paces this loop in real time
         }
@@ -319,14 +272,15 @@ class VoiceSession(val room: String) {
         runCatching { record?.stop(); record?.release() }
         runCatching { track?.stop(); track?.release() }
         runCatching { encoder?.stop(); encoder?.release() }
-        synchronized(queues) { decoders.values.forEach { runCatching { it.stop(); it.release() } }; decoders.clear(); queues.clear() }
+        synchronized(decoders) { decoders.values.forEach { runCatching { it.stop(); it.release() } }; decoders.clear() }
+        mixer.clear()
     }
 
     companion object {
-        const val RATE = 48_000
-        const val FRAME = 960            // 20 ms
-        const val CODEC_OPUS = 1
-        const val CODEC_PCM16 = 2
+        const val RATE = VoiceWire.RATE
+        const val FRAME = VoiceWire.FRAME
+        const val CODEC_OPUS = VoiceWire.CODEC_OPUS
+        const val CODEC_PCM16 = VoiceWire.CODEC_PCM16
 
         fun hasCodec(mime: String, encoder: Boolean) = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
             info.isEncoder == encoder && info.supportedTypes.any { it.equals(mime, ignoreCase = true) }

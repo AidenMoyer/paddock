@@ -132,7 +132,7 @@ fun ProjectScreen(id: Int, nav: Nav) {
                     "plan" -> LazyColumn(contentPadding = PaddingValues(16.dp)) {
                         item {
                             if (pr.plan.isNullOrBlank()) EmptyState(Icons.Filled.AutoAwesome, "No plan yet", "Generate one from the web app's project page.")
-                            else MarkdownText(pr.plan)
+                            else MarkdownText(pr.plan!!)
                         }
                     }
                     "notes" -> LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
