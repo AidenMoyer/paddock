@@ -38,10 +38,16 @@ class ShareBody(BaseModel):
 def create(body: ShareBody, request: Request, actor: Actor = Depends(require_write)):
     if bool(body.item_id) == bool(body.project_id):
         raise HTTPException(400, "Share either one item or one project")
-    if body.item_id and not db.q1("SELECT 1 FROM items WHERE id=? AND trashed_at IS NULL", (body.item_id,)):
-        raise HTTPException(404, "No such item")
-    if body.project_id and not db.q1("SELECT 1 FROM projects WHERE id=?", (body.project_id,)):
-        raise HTTPException(404, "No such project")
+    from .. import access
+
+    if body.item_id:
+        item = db.q1("SELECT * FROM items WHERE id=? AND trashed_at IS NULL", (body.item_id,))
+        if not item or not access.can_read_item(actor, item):
+            raise HTTPException(404, "No such item")
+    if body.project_id:
+        p = db.q1("SELECT * FROM projects WHERE id=?", (body.project_id,))
+        if not p or not access.project_access(actor, p):
+            raise HTTPException(404, "No such project")
     tok = new_token("pdk_share")
     now = time.time()
     db.x("INSERT INTO share_links(token_hash, item_id, project_id, created_by, created_at, expires_at, max_downloads, label) "

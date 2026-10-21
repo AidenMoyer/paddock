@@ -5,15 +5,20 @@ Flow (each step is idempotent, so a flaky mobile connection just resumes):
   2. POST /api/uploads         {filename, size, sha256} → {upload_id, offset}
   3. PUT  /api/uploads/{id}?offset=N   raw bytes chunk  → {offset}
   4. POST /api/uploads/{id}/complete                     → verifies SHA-256, files it, catalogs it
+
+Every refusal says why in plain words (the apps show it next to the file): no library to receive it, a library
+this person can't add to, an unknown file type, a full disk, a read-only folder, a damaged transfer.
 """
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import re
 import secrets
+import shutil
 import time
 from datetime import datetime
 from pathlib import Path
@@ -22,7 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from .. import db, kinds, scanner
+from .. import access, db, kinds, projects, scanner
 from ..actor import Actor
 from ..config import settings
 from .deps import require_write
@@ -33,19 +38,51 @@ MAX_CHUNK = 64 * 1024 * 1024
 MAX_FILE = 200 * 1024**3
 
 
-def _target_library(library_id: int | None, kind: str | None) -> dict:
+def _target_library(actor: Actor, library_id: int | None, project_id: int | None = None) -> dict:
+    """Where an upload goes: a chosen library, the project's folder, or this person's backup library."""
+    def writable(lib: dict | None) -> bool:
+        return bool(lib) and access.can_write_library(actor, lib["id"])
+
+    if project_id:
+        p = db.q1("SELECT * FROM projects WHERE id=?", (project_id,))
+        if not p or access.project_access(actor, p) != "write":
+            raise HTTPException(403, "You can't add files to this project")
+        lib = db.q1("SELECT * FROM libraries WHERE id=?", (p["upload_library_id"],)) if p.get("upload_library_id") else None
+        if writable(lib):
+            return lib
+        for lib in db.q("SELECT * FROM libraries ORDER BY CASE kind WHEN 'mixed' THEN 0 WHEN 'home_videos' THEN 1 "
+                        "WHEN 'engineering' THEN 2 ELSE 3 END, id"):
+            if writable(lib):
+                return lib
+        raise HTTPException(409, "There's no library this project can put files in. Ask an admin to add one you can write to.")
     if library_id:
         lib = db.q1("SELECT * FROM libraries WHERE id=?", (library_id,))
-        if not lib:
+        if not lib or not access.can_read_library(actor, lib["id"]):
             raise HTTPException(404, "No such library")
+        if not writable(lib):
+            raise HTTPException(403, f"You can look at {lib['name']} but not add files to it")
         return lib
-    for lib in db.q("SELECT * FROM libraries WHERE kind='photos' ORDER BY id"):
-        if json.loads(lib["options"] or "{}").get("backup_target"):
+    mine = db.q1("SELECT upload_library_id FROM user_settings WHERE user_id=?", (actor.user_id,))
+    if mine and mine["upload_library_id"]:
+        lib = db.q1("SELECT * FROM libraries WHERE id=?", (mine["upload_library_id"],))
+        if writable(lib):
             return lib
-    lib = db.q1("SELECT * FROM libraries WHERE kind IN ('photos','home_videos','mixed') ORDER BY id")
-    if not lib:
-        raise HTTPException(409, "Create a Photos library first (Settings → Libraries) to receive backups")
-    return lib
+    for lib in db.q("SELECT * FROM libraries WHERE kind='photos' ORDER BY id"):
+        if json.loads(lib["options"] or "{}").get("backup_target") and writable(lib):
+            return lib
+    for lib in db.q("SELECT * FROM libraries WHERE kind IN ('photos','home_videos','mixed') ORDER BY id"):
+        if writable(lib):
+            return lib
+    raise HTTPException(409, "There's no Photos library you can back up to yet. Ask an admin to create one "
+                             "(Manage server → Libraries) or to give you access to one.")
+
+
+def _disk_error(e: OSError, where: str) -> HTTPException:
+    if e.errno == errno.ENOSPC:
+        return HTTPException(507, f"The server's disk is full, so {where} can't take more files right now")
+    if e.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
+        return HTTPException(503, f"The server isn't allowed to write into {where} (the folder is read-only)")
+    return HTTPException(503, f"The server couldn't save the file into {where} ({e.strerror or e})")
 
 
 def _safe_name(name: str) -> str:
@@ -75,6 +112,7 @@ class StartBody(BaseModel):
     sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
     taken_at: float | None = None
     library_id: int | None = None
+    project_id: int | None = None
     subfolder: str | None = Field(default=None, max_length=200)
 
 
@@ -82,20 +120,28 @@ class StartBody(BaseModel):
 def start(body: StartBody, actor: Actor = Depends(require_write)):
     sha = body.sha256.lower()
     if not kinds.classify(Path(body.filename).suffix):
-        raise HTTPException(415, "Paddock doesn't know this file type")
-    existing = db.q1("SELECT id FROM items WHERE sha256=?", (sha,))
+        raise HTTPException(415, f"Paddock doesn't keep {Path(body.filename).suffix or 'files without an extension'} files")
+    lib = _target_library(actor, body.library_id, body.project_id)
+    existing = db.q1("SELECT id, kind FROM items WHERE sha256=?", (sha,))
     if existing:
+        if body.project_id:     # already on the server: just put it in the project
+            projects.add_items(body.project_id, [existing["id"]], projects.ROLE_FOR_KIND.get(existing["kind"], "reference"))
         return {"status": "duplicate", "item_id": existing["id"]}
     open_up = db.q1("SELECT * FROM uploads WHERE sha256=? AND user_id=? AND status='open'", (sha, actor.user_id))
     if open_up:
         return {"status": "resume", "upload_id": open_up["id"], "offset": open_up["received"], "chunk_size": 8 * 1024 * 1024}
-    lib = _target_library(body.library_id, None)
+    try:
+        free = shutil.disk_usage(lib["path"]).free
+    except OSError:
+        raise HTTPException(503, f"The folder for {lib['name']} isn't reachable on the server right now")
+    if free < body.size + 256 * 1024 * 1024:
+        raise HTTPException(507, f"The server's disk is full: {lib['name']} has {free // (1024 * 1024)} MB free")
     uid = secrets.token_urlsafe(16)
     now = time.time()
     db.x("INSERT INTO uploads(id, user_id, device_id, filename, size, sha256, taken_at, received, status, created_at, updated_at) "
          "VALUES(?,?,?,?,?,?,?,0,'open',?,?)",
          (uid, actor.user_id, actor.device_id, _safe_name(body.filename), body.size, sha, body.taken_at, now, now))
-    meta = {"library_id": lib["id"], "subfolder": body.subfolder}
+    meta = {"library_id": lib["id"], "subfolder": body.subfolder, "project_id": body.project_id}
     (settings.uploads_tmp_dir / f"{uid}.json").write_text(json.dumps(meta))
     return {"status": "new", "upload_id": uid, "offset": 0, "chunk_size": 8 * 1024 * 1024}
 
@@ -122,16 +168,19 @@ async def put_chunk(uid: str, offset: int, request: Request, actor: Actor = Depe
         raise HTTPException(409, f"Expected offset {up['received']}", headers={"Upload-Offset": str(up["received"])})
     tmp = settings.uploads_tmp_dir / f"{uid}.part"
     written = 0
-    with tmp.open("ab") as f:
-        if f.tell() != offset:  # crash between write and DB update: trust the DB, truncate the file
-            f.truncate(offset)
-            f.seek(offset)
-        async for chunk in request.stream():
-            written += len(chunk)
-            if written > MAX_CHUNK or offset + written > up["size"]:
+    try:
+        with tmp.open("ab") as f:
+            if f.tell() != offset:  # crash between write and DB update: trust the DB, truncate the file
                 f.truncate(offset)
-                raise HTTPException(413, "Chunk too large")
-            f.write(chunk)
+                f.seek(offset)
+            async for chunk in request.stream():
+                written += len(chunk)
+                if written > MAX_CHUNK or offset + written > up["size"]:
+                    f.truncate(offset)
+                    raise HTTPException(413, "Chunk too large")
+                f.write(chunk)
+    except OSError as e:
+        raise _disk_error(e, "the server's upload area")
     new_offset = offset + written
     db.x("UPDATE uploads SET received=?, updated_at=? WHERE id=?", (new_offset, time.time(), uid))
     return {"offset": new_offset}
@@ -154,25 +203,35 @@ def _finish(uid: str, actor: Actor) -> dict:
         raise HTTPException(422, "Checksum mismatch — the file was corrupted in transit; it will be re-sent")
     meta_p = settings.uploads_tmp_dir / f"{uid}.json"
     meta = json.loads(meta_p.read_text()) if meta_p.exists() else {}
-    lib = _target_library(meta.get("library_id"), None)
+    project_id = meta.get("project_id")
+    lib = _target_library(actor, meta.get("library_id"), project_id)
     root = Path(lib["path"])
     when = datetime.fromtimestamp(up["taken_at"] or time.time())
     who = "Uploads"
     if up["device_id"]:
         dev = db.q1("SELECT name FROM devices WHERE id=?", (up["device_id"],))
         who = f"Phone Backups/{_safe_name(dev['name']) if dev else 'Phone'}"
+        mine = db.q1("SELECT upload_folder FROM user_settings WHERE user_id=?", (actor.user_id,))
+        if mine and mine["upload_folder"]:     # this person's own folder, e.g. "Family/Aiden"
+            who = "/".join(_safe_name(p) for p in mine["upload_folder"].replace("\\", "/").split("/") if p.strip(" ."))
     folder = root / who / f"{when:%Y}" / f"{when:%Y-%m}"
-    if meta.get("subfolder"):
+    if project_id:
+        pname = (db.q1("SELECT name FROM projects WHERE id=?", (project_id,)) or {}).get("name") or f"Project {project_id}"
+        folder = root / "Projects" / _safe_name(pname)
+    elif meta.get("subfolder"):
         folder = root / "Uploads" / _safe_name(meta["subfolder"])
     if not scanner.within(folder, root):
         raise HTTPException(400, "Bad destination")
-    folder.mkdir(parents=True, exist_ok=True)
     dest = folder / up["filename"]
-    n = 1
-    while dest.exists():
-        dest = folder / f"{Path(up['filename']).stem} ({n}){Path(up['filename']).suffix}"
-        n += 1
-    _move(tmp, dest)  # rename when on the same dataset, copy+delete across datasets
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        n = 1
+        while dest.exists():
+            dest = folder / f"{Path(up['filename']).stem} ({n}){Path(up['filename']).suffix}"
+            n += 1
+        _move(tmp, dest)  # rename when on the same dataset, copy+delete across datasets
+    except OSError as e:
+        raise _disk_error(e, lib["name"])
     if up["taken_at"]:
         os.utime(dest, (up["taken_at"], up["taken_at"]))
     meta_p.unlink(missing_ok=True)
@@ -180,6 +239,9 @@ def _finish(uid: str, actor: Actor) -> dict:
     if item_id:
         db.x("UPDATE items SET sha256=? WHERE id=?", (up["sha256"], item_id))
     db.x("UPDATE uploads SET status='done', item_id=?, updated_at=? WHERE id=?", (item_id, time.time(), uid))
+    if item_id and project_id:
+        kind = (db.q1("SELECT kind FROM items WHERE id=?", (item_id,)) or {}).get("kind")
+        projects.add_items(project_id, [item_id], projects.ROLE_FOR_KIND.get(kind, "reference"))
     db.audit(actor.audit_name, "upload.complete", file=dest.relative_to(root).as_posix(), item=item_id)
     from .. import ai
 
@@ -191,8 +253,6 @@ def _finish(uid: str, actor: Actor) -> dict:
 
 
 def _move(src: Path, dst: Path) -> None:
-    import shutil
-
     shutil.move(str(src), str(dst))
 
 

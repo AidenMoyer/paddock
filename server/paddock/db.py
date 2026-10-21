@@ -215,6 +215,51 @@ CREATE TABLE IF NOT EXISTS share_links (
     label TEXT
 );
 
+-- communities: groups of people that share libraries, projects, comments, watch parties and voice (access.py)
+CREATE TABLE IF NOT EXISTS communities (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    description TEXT NOT NULL DEFAULT '',
+    settings TEXT NOT NULL DEFAULT '{}',      -- comments / parties / voice on or off
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS community_members (
+    community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT 'member',      -- member | manager
+    PRIMARY KEY (community_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS library_access (
+    library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+    community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+    access TEXT NOT NULL DEFAULT 'read',      -- read | write
+    PRIMARY KEY (library_id, community_id)
+);
+CREATE TABLE IF NOT EXISTS project_access (
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+    access TEXT NOT NULL DEFAULT 'write',
+    PRIMARY KEY (project_id, community_id)
+);
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    media_only INTEGER NOT NULL DEFAULT 0,
+    upload_library_id INTEGER REFERENCES libraries(id) ON DELETE SET NULL,
+    upload_folder TEXT                        -- sub-folder for this person's uploads/backups, e.g. "Phones/aiden"
+);
+-- comments on videos, photos and everything else, seen within a community (comments.py)
+CREATE TABLE IF NOT EXISTS comments (
+    id INTEGER PRIMARY KEY,
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    community_id INTEGER REFERENCES communities(id) ON DELETE CASCADE,   -- NULL: everyone on this server
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    body TEXT NOT NULL,
+    at REAL,                                  -- position in the video, if the comment is about a moment
+    created_at REAL NOT NULL,
+    edited_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_comments_item ON comments(item_id, created_at);
+
 -- videos shared on the internet with a password (public.py)
 CREATE TABLE IF NOT EXISTS public_links (
     id INTEGER PRIMARY KEY,
@@ -315,6 +360,13 @@ CREATE TABLE IF NOT EXISTS backup_runs (
 );
 """
 
+# columns added after the first release (existing databases get them on start)
+COLUMNS = [
+    ("projects", "kind", "TEXT NOT NULL DEFAULT 'video'"),          # video | build | trip | research | general
+    ("projects", "created_by", "INTEGER"),
+    ("projects", "upload_library_id", "INTEGER"),                   # where files uploaded into the project go
+]
+
 _local = threading.local()
 _init_lock = threading.Lock()
 _initialized_path: str | None = None
@@ -336,6 +388,9 @@ def init_db() -> None:
         settings.ensure_dirs()
         conn = _connect()
         conn.executescript(SCHEMA)
+        for table, column, ddl in COLUMNS:
+            if column not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
         conn.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', ?)", (str(SCHEMA_VERSION),)
         )

@@ -1,4 +1,5 @@
-"""Projects: a build, a trip, a race weekend — media, CAD, notes, places and a video plan in one place."""
+"""Projects: a build, a trip, a race weekend, research, anything — media, CAD, notes, places and, when it's
+headed for a video, a plan that turns the pile of footage, photos and audio into one."""
 
 from __future__ import annotations
 
@@ -7,26 +8,35 @@ import time
 from collections import Counter, defaultdict
 from datetime import datetime
 
-from . import catalog, db
+from . import access, catalog, db
+from .actor import Actor
 
 ROLES = ("footage", "broll", "photo", "audio", "music", "cad", "print", "reference")
 STATUSES = ("idea", "active", "filming", "editing", "done")
+KINDS = {"video": "Making a video", "build": "A build", "trip": "A trip or event", "research": "Research",
+         "general": "Anything else"}
+# the role a file gets when it's uploaded straight into a project
+ROLE_FOR_KIND = {"video": "footage", "red_clip": "footage", "braw_clip": "footage", "photo": "photo", "audio": "audio",
+                 "model3d": "cad", "cad": "cad", "pcb": "cad", "gcode": "print"}
 
 
 def create(name: str, description: str = "", goal: str = "", location_name: str | None = None,
-           lat: float | None = None, lon: float | None = None, status: str = "active") -> int:
+           lat: float | None = None, lon: float | None = None, status: str = "active", kind: str = "video",
+           created_by: int | None = None) -> int:
     now = time.time()
-    return db.x("INSERT INTO projects(name, description, goal, status, location_name, lat, lon, created_at, updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?)",
+    return db.x("INSERT INTO projects(name, description, goal, status, kind, created_by, location_name, lat, lon, created_at, "
+                "updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (name.strip()[:200], description, goal, status if status in STATUSES else "active",
-                 location_name, lat, lon, now, now)).lastrowid
+                 kind if kind in KINDS else "general", created_by, location_name, lat, lon, now, now)).lastrowid
 
 
 def update(project_id: int, **fields) -> None:
-    allowed = {"name", "description", "goal", "status", "location_name", "lat", "lon"}
+    allowed = {"name", "description", "goal", "status", "kind", "location_name", "lat", "lon", "upload_library_id"}
     sets = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if "status" in sets and sets["status"] not in STATUSES:
         raise ValueError(f"status must be one of {', '.join(STATUSES)}")
+    if "kind" in sets and sets["kind"] not in KINDS:
+        raise ValueError(f"kind must be one of {', '.join(KINDS)}")
     if not sets:
         return
     sets["updated_at"] = time.time()
@@ -67,23 +77,33 @@ def save_plan(project_id: int, plan_md: str) -> None:
          (plan_md, time.time(), time.time(), project_id))
 
 
-def listing() -> list[dict]:
+def listing(actor: Actor | None = None) -> list[dict]:
     rows = db.q("SELECT p.*, (SELECT COUNT(*) FROM project_items pi WHERE pi.project_id=p.id) AS item_count, "
                 "(SELECT pi.item_id FROM project_items pi JOIN items i ON i.id=pi.item_id "
                 " WHERE pi.project_id=p.id AND i.thumb_state='ok' ORDER BY pi.added_at LIMIT 1) AS cover_id "
                 "FROM projects p ORDER BY p.updated_at DESC")
+    out = []
     for r in rows:
-        r.pop("plan", None)
-    return rows
+        level = access.project_access(actor, r)
+        if level:
+            r.pop("plan", None)
+            r["access"] = level
+            out.append(r)
+    return out
 
 
-def detail(project_id: int) -> dict | None:
+def detail(project_id: int, actor: Actor | None = None) -> dict | None:
     p = db.q1("SELECT * FROM projects WHERE id=?", (project_id,))
-    if not p:
+    if not p or not access.project_access(actor, p):
         return None
+    p["access"] = access.project_access(actor, p)
+    p["kind_label"] = KINDS.get(p.get("kind") or "video", "")
+    p["communities"] = db.q("SELECT c.id, c.name, a.access FROM project_access a JOIN communities c ON c.id=a.community_id "
+                            "WHERE a.project_id=? ORDER BY c.name", (project_id,))
+    frag, ids = access.clause(access.library_ids(actor))
     rows = db.q(f"SELECT {catalog.ITEM_COLS}, pi.role, pi.note FROM project_items pi JOIN items i ON i.id=pi.item_id "
-                f"JOIN libraries l ON l.id=i.library_id WHERE pi.project_id=? AND i.trashed_at IS NULL "
-                f"ORDER BY i.taken_at", (project_id,))
+                f"JOIN libraries l ON l.id=i.library_id WHERE pi.project_id=? AND i.trashed_at IS NULL{frag} "
+                f"ORDER BY i.taken_at", (project_id, *ids))
     items = catalog.cards(rows)
     for c, r in zip(items, rows):
         c["role"], c["note"] = r["role"], r["note"]

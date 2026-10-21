@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from .. import db, kinds, scanner, system
+from .. import access, db, kinds, scanner, system
 from ..actor import Actor
 from ..config import settings
 from .deps import current_actor, require_admin
@@ -19,12 +19,20 @@ router = APIRouter(prefix="/api")
 
 @router.get("/libraries")
 def list_libraries(actor: Actor = Depends(current_actor)):
-    rows = db.q("SELECT * FROM libraries ORDER BY name")
-    for r in rows:
+    acc = access.library_access(actor)
+    rows = []
+    for r in db.q("SELECT * FROM libraries ORDER BY name"):
+        if acc is not None and r["id"] not in acc:
+            continue
         r["options"] = json.loads(r["options"] or "{}")
         r["kind_label"] = kinds.LIBRARY_KINDS.get(r["kind"], r["kind"])
-        if not actor.is_admin:
+        r["access"] = "write" if acc is None else acc[r["id"]]
+        if actor.is_admin:
+            r["communities"] = db.q("SELECT c.id, c.name, a.access FROM library_access a JOIN communities c ON c.id=a.community_id "
+                                    "WHERE a.library_id=? ORDER BY c.name", (r["id"],))
+        else:
             r.pop("path", None)
+        rows.append(r)
     return rows
 
 
@@ -105,6 +113,35 @@ def update_library(lib_id: int, body: LibraryPatch, actor: Actor = Depends(requi
     return {"ok": True}
 
 
+class LibraryAccessBody(BaseModel):
+    visibility: str = Field(pattern=r"^(everyone|communities)$")
+    communities: list[dict] = Field(default_factory=list, max_length=200)    # [{id, access: read|write}]
+
+
+@router.put("/libraries/{lib_id}/access")
+def set_library_access(lib_id: int, body: LibraryAccessBody, actor: Actor = Depends(require_admin)):
+    """Open a library to everyone, or only to chosen communities (each with read or write access)."""
+    lib = db.q1("SELECT * FROM libraries WHERE id=?", (lib_id,))
+    if not lib:
+        raise HTTPException(404, "No such library")
+    grants = []
+    for c in body.communities:
+        cid, level = int(c.get("id", 0)), c.get("access", "read")
+        if level not in ("read", "write") or not db.q1("SELECT 1 FROM communities WHERE id=?", (cid,)):
+            raise HTTPException(400, "Unknown community or access level")
+        grants.append((lib_id, cid, level))
+    opts = json.loads(lib["options"] or "{}")
+    opts["visibility"] = body.visibility
+    with db.tx():
+        db.x("UPDATE libraries SET options=? WHERE id=?", (json.dumps(opts), lib_id))
+        db.x("DELETE FROM library_access WHERE library_id=?", (lib_id,))
+        for g in grants:
+            db.x("INSERT INTO library_access(library_id, community_id, access) VALUES(?,?,?)", g)
+    db.audit(actor.audit_name, "library.access", library=lib_id, visibility=body.visibility,
+             communities=[{"id": g[1], "access": g[2]} for g in grants])
+    return {"ok": True}
+
+
 @router.delete("/libraries/{lib_id}")
 def delete_library(lib_id: int, actor: Actor = Depends(require_admin)):
     """Removes the library from Paddock's catalog. Files on disk are untouched."""
@@ -120,8 +157,10 @@ def delete_library(lib_id: int, actor: Actor = Depends(require_admin)):
 def scan(lib_id: int, full: bool = False, actor: Actor = Depends(current_actor)):
     if not actor.can("write"):
         raise HTTPException(403, "Read-only")
-    if not db.q1("SELECT 1 FROM libraries WHERE id=?", (lib_id,)):
+    if not db.q1("SELECT 1 FROM libraries WHERE id=?", (lib_id,)) or not access.can_read_library(actor, lib_id):
         raise HTTPException(404, "No such library")
+    if not access.can_write_library(actor, lib_id):
+        raise HTTPException(403, "You can't rescan a library you can only look at")
     return {"job_id": scanner.queue_scan(lib_id, full=full)}
 
 

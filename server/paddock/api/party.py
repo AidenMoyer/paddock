@@ -44,8 +44,10 @@ def _get(pid: str, actor: Actor):
 
 @router.post("/parties")
 def create_party(body: NewParty, actor: Actor = Depends(current_actor), _h: Actor = Depends(require_human)):
-    item = db.q1("SELECT id, title FROM items WHERE id=? AND trashed_at IS NULL", (body.item_id,))
-    if not item:
+    from .. import access
+
+    item = db.q1("SELECT id, title, library_id FROM items WHERE id=? AND trashed_at IS NULL", (body.item_id,))
+    if not item or not access.can_read_item(actor, item):
         raise HTTPException(404, "Item not found")
     invited = set()
     for name in body.invite:
@@ -61,8 +63,18 @@ def create_party(body: NewParty, actor: Actor = Depends(current_actor), _h: Acto
 
 @router.get("/people")
 def people(actor: Actor = Depends(current_actor)):
-    """Who you can invite (names only)."""
-    return [{"username": u["username"]} for u in db.q("SELECT username FROM users ORDER BY username COLLATE NOCASE")]
+    """Who you can invite or call (names only): everyone for admins and people outside any community,
+    otherwise the people in your communities."""
+    from .. import access
+
+    mine = access.communities_of(actor.user_id)
+    if actor.is_admin or not mine:
+        rows = db.q("SELECT id, username, display_name FROM users ORDER BY username COLLATE NOCASE")
+    else:
+        rows = db.q(f"SELECT DISTINCT u.id, u.username, u.display_name FROM users u JOIN community_members m ON m.user_id=u.id "
+                    f"WHERE m.community_id IN ({','.join('?' * len(mine))}) ORDER BY u.username COLLATE NOCASE", mine)
+    return [{"id": u["id"], "username": u["username"], "display_name": u["display_name"] or u["username"]}
+            for u in rows if u["id"] != actor.user_id]
 
 
 @router.get("/parties")

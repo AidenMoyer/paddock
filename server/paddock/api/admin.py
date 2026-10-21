@@ -25,6 +25,7 @@ router = APIRouter(prefix="/api")
 def overview(actor: Actor = Depends(require_admin)):
     status = tools.TOOLS["server_status"].fn(actor, {})
     return {
+        "media_only_everyone": bool(db.get_setting("media_only_everyone", False)),
         "server": {"name": server_name(), "version": __version__, "data_dir": str(settings.data_dir),
                    "media_roots": [str(r) for r in settings.media_roots]},
         "status": status,
@@ -85,6 +86,7 @@ def end_session(prefix: str, actor: Actor = Depends(require_admin), _h: Actor = 
 class GeneralBody(BaseModel):
     server_name: str | None = Field(default=None, max_length=60)
     lan_urls: list[str] | None = None
+    media_only_everyone: bool | None = None       # everyone who isn't an admin gets the media-only app
 
 
 @router.put("/admin/general")
@@ -94,6 +96,8 @@ def general(body: GeneralBody, actor: Actor = Depends(require_admin), _h: Actor 
     if body.lan_urls is not None:
         urls = [u.strip().rstrip("/") for u in body.lan_urls if u.strip().startswith(("https://", "http://"))]
         db.set_setting("lan_urls", urls or None)
+    if body.media_only_everyone is not None:
+        db.set_setting("media_only_everyone", body.media_only_everyone)
     db.audit(actor.audit_name, "settings.general", **body.model_dump(exclude_none=True))
     return {"ok": True}
 

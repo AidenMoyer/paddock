@@ -6,7 +6,7 @@ import json
 import time
 from datetime import datetime
 
-from . import db
+from . import access, db
 
 ITEM_COLS = ("i.id, i.library_id, i.kind, i.ext, i.title, i.rel_path, i.size, i.taken_at, i.added_at, i.duration, "
              "i.width, i.height, i.lat, i.lon, i.group_key, i.sort_key, i.thumb_state, i.favorite, i.meta, "
@@ -94,9 +94,15 @@ def get_item(item_id: int, user_id: int | None = None, include_trashed: bool = F
 def search(query: str | None = None, kind: str | list[str] | None = None, library_id: int | None = None,
            tag: str | None = None, date_from: float | None = None, date_to: float | None = None,
            project_id: int | None = None, group: str | None = None, favorite: bool | None = None,
-           sort: str = "relevance", limit: int = 50, offset: int = 0, include_trashed: bool = False) -> list[dict]:
+           sort: str = "relevance", limit: int = 50, offset: int = 0, include_trashed: bool = False,
+           allowed: set[int] | None = None) -> list[dict]:
+    """`allowed`: the libraries this person may see (access.library_ids); None means all."""
     where = ["1=1"] if include_trashed else ["i.trashed_at IS NULL"]
     params: list = []
+    if allowed is not None:
+        frag, ids = access.clause(allowed)
+        where.append("1=1" + frag)
+        params += ids
     join = ""
     order = "i.taken_at DESC"
     if query:
@@ -144,10 +150,11 @@ def search(query: str | None = None, kind: str | list[str] | None = None, librar
     return cards(db.q(sql, params + [min(max(limit, 1), 500), max(offset, 0)]))
 
 
-def continue_watching(user_id: int, limit: int = 20) -> list[dict]:
+def continue_watching(user_id: int, limit: int = 20, allowed: set[int] | None = None) -> list[dict]:
+    frag, ids = access.clause(allowed)
     rows = db.q(f"SELECT {ITEM_COLS}, p.position, p.completed FROM progress p JOIN items i ON i.id=p.item_id "
                 f"JOIN libraries l ON l.id=i.library_id WHERE p.user_id=? AND p.completed=0 AND p.position>15 "
-                f"AND i.trashed_at IS NULL ORDER BY p.updated_at DESC LIMIT ?", (user_id, limit))
+                f"AND i.trashed_at IS NULL{frag} ORDER BY p.updated_at DESC LIMIT ?", (user_id, *ids, limit))
     return cards(rows, user_id)
 
 
@@ -156,10 +163,14 @@ def recently_added(kinds: list[str] | None = None, limit: int = 24, library_id: 
 
 
 def groups(library_id: int | None = None, prefix: str | None = None, kind: list[str] | None = None,
-           limit: int = 200, offset: int = 0) -> list[dict]:
+           limit: int = 200, offset: int = 0, allowed: set[int] | None = None) -> list[dict]:
     """Shows, albums, shoot days, part families — one row per group with a representative item."""
     where = ["i.trashed_at IS NULL", "i.group_key IS NOT NULL"]
     params: list = []
+    if allowed is not None:
+        frag, ids = access.clause(allowed)
+        where.append("1=1" + frag)
+        params += ids
     if library_id:
         where.append("i.library_id=?")
         params.append(library_id)
@@ -203,25 +214,27 @@ def group_label(key: str) -> str:
     return key
 
 
-def stats() -> dict:
+def stats(allowed: set[int] | None = None) -> dict:
+    frag, ids = access.clause(allowed, "library_id")
     by_kind = {r["kind"]: {"count": r["c"], "size": r["s"], "duration": r["d"]} for r in db.q(
-        "SELECT kind, COUNT(*) c, SUM(size) s, SUM(COALESCE(duration,0)) d FROM items WHERE trashed_at IS NULL GROUP BY kind")}
+        f"SELECT kind, COUNT(*) c, SUM(size) s, SUM(COALESCE(duration,0)) d FROM items WHERE trashed_at IS NULL{frag} GROUP BY kind", ids)}
     return {
         "items": sum(v["count"] for v in by_kind.values()),
         "bytes": sum(v["size"] or 0 for v in by_kind.values()),
         "by_kind": by_kind,
-        "libraries": db.q1("SELECT COUNT(*) c FROM libraries")["c"],
+        "libraries": db.q1("SELECT COUNT(*) c FROM libraries")["c"] if allowed is None else len(allowed),
         "projects": db.q1("SELECT COUNT(*) c FROM projects")["c"],
         "trash": db.q1("SELECT COUNT(*) c FROM items WHERE trashed_at IS NOT NULL")["c"],
     }
 
 
-def on_this_day(limit: int = 30) -> list[dict]:
+def on_this_day(limit: int = 30, allowed: set[int] | None = None) -> list[dict]:
     now = datetime.now()
     md = now.strftime("%m-%d")
+    frag, ids = access.clause(allowed)
     rows = db.q(f"SELECT {ITEM_COLS} FROM items i JOIN libraries l ON l.id=i.library_id "
-                f"WHERE i.kind IN ('photo','video') AND i.trashed_at IS NULL AND i.thumb_state='ok' "
+                f"WHERE i.kind IN ('photo','video') AND i.trashed_at IS NULL AND i.thumb_state='ok'{frag} "
                 f"AND strftime('%m-%d', i.taken_at, 'unixepoch', 'localtime')=? "
                 f"AND strftime('%Y', i.taken_at, 'unixepoch', 'localtime')<? ORDER BY RANDOM() LIMIT ?",
-                (md, str(now.year), limit))
+                (*ids, md, str(now.year), limit))
     return cards(rows)

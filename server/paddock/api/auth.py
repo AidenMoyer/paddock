@@ -10,7 +10,7 @@ import segno
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from .. import __version__, db, tls, wireguard
+from .. import __version__, access, db, tls, wireguard
 from ..actor import Actor
 from ..config import settings
 from ..security import (dummy_verify, hash_password, login_throttle, new_token, pairing_throttle, password_problems,
@@ -29,7 +29,9 @@ def server_name() -> str:
 
 def _user_public(u: dict) -> dict:
     return {"id": u["id"], "username": u["username"], "display_name": u.get("display_name") or u["username"],
-            "is_admin": bool(u["is_admin"]), "allow_ai_changes": bool(u.get("allow_ai_changes"))}
+            "is_admin": bool(u["is_admin"]), "allow_ai_changes": bool(u.get("allow_ai_changes")),
+            "media_only": not u["is_admin"] and access.media_only(u["id"]),
+            "communities": access.my_communities(u["id"])}
 
 
 def _start_web_session(response: Response, request: Request, user_id: int) -> None:
@@ -158,7 +160,48 @@ class NewUser(BaseModel):
 
 @router.get("/users")
 def list_users(actor: Actor = Depends(require_admin)):
-    return [_user_public(u) | {"created_at": u["created_at"]} for u in db.q("SELECT * FROM users ORDER BY id")]
+    prefs = {r["user_id"]: r for r in db.q("SELECT * FROM user_settings")}
+    out = []
+    for u in db.q("SELECT * FROM users ORDER BY id"):
+        p = prefs.get(u["id"]) or {}
+        out.append(_user_public(u) | {"created_at": u["created_at"], "media_only_self": bool(p.get("media_only")),
+                                      "upload_library_id": p.get("upload_library_id"), "upload_folder": p.get("upload_folder"),
+                                      "devices": db.q1("SELECT COUNT(*) c FROM devices WHERE user_id=? AND revoked_at IS NULL",
+                                                       (u["id"],))["c"]})
+    return out
+
+
+class UserPatch(BaseModel):
+    display_name: str | None = Field(default=None, max_length=60)
+    is_admin: bool | None = None
+    media_only: bool | None = None
+    upload_library_id: int | None = None          # 0 clears it
+    upload_folder: str | None = Field(default=None, max_length=200)
+
+
+@router.patch("/users/{user_id}")
+def update_user(user_id: int, body: UserPatch, actor: Actor = Depends(require_admin), _h: Actor = Depends(require_human)):
+    u = db.q1("SELECT * FROM users WHERE id=?", (user_id,))
+    if not u:
+        raise HTTPException(404, "No such person")
+    if body.is_admin is not None:
+        if user_id == actor.user_id and not body.is_admin:
+            raise HTTPException(400, "You can't remove your own admin rights")
+        db.x("UPDATE users SET is_admin=? WHERE id=?", (int(body.is_admin), user_id))
+    if body.display_name:
+        db.x("UPDATE users SET display_name=? WHERE id=?", (body.display_name.strip(), user_id))
+    db.x("INSERT OR IGNORE INTO user_settings(user_id) VALUES(?)", (user_id,))
+    if body.media_only is not None:
+        db.x("UPDATE user_settings SET media_only=? WHERE user_id=?", (int(body.media_only), user_id))
+    if body.upload_library_id is not None:
+        if body.upload_library_id and not db.q1("SELECT 1 FROM libraries WHERE id=?", (body.upload_library_id,)):
+            raise HTTPException(400, "No such library")
+        db.x("UPDATE user_settings SET upload_library_id=? WHERE user_id=?", (body.upload_library_id or None, user_id))
+    if body.upload_folder is not None:
+        folder = "/".join(p.strip() for p in body.upload_folder.replace("\\", "/").split("/") if p.strip() not in ("", ".", ".."))
+        db.x("UPDATE user_settings SET upload_folder=? WHERE user_id=?", (folder or None, user_id))
+    db.audit(actor.audit_name, "user.updated", user_id=user_id, **body.model_dump(exclude_none=True))
+    return {"ok": True}
 
 
 @router.post("/users")

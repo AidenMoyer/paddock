@@ -14,13 +14,14 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, catalog, db, jobs, projects
+from . import __version__, access, catalog, db, jobs, projects
 from .actor import Actor
 from .config import settings
 
@@ -57,7 +58,16 @@ class ToolError(Exception):
     pass
 
 
+_current = threading.local()       # the actor and scope of the tool call running on this thread
+
+
+def _media_only(actor: Actor) -> bool:
+    return not actor.is_admin and actor.kind != "system" and access.media_only(actor.user_id)
+
+
 def available(actor: Actor) -> list[Tool]:
+    if _media_only(actor):
+        return []
     return [t for t in TOOLS.values() if actor.can(t.scope)]
 
 
@@ -67,8 +77,14 @@ def call(actor: Actor, name: str, args: dict) -> Any:
         raise ToolError(f"Unknown tool: {name}")
     if not actor.can(t.scope):
         raise ToolError(f"'{name}' needs the '{t.scope}' permission, which this connection does not have.")
+    if _media_only(actor):
+        raise ToolError("This account is in media-only mode, so the assistant's tools aren't available.")
     _validate(t.schema, args or {})
-    result = t.fn(actor, args or {})
+    _current.actor, _current.scope = actor, t.scope
+    try:
+        result = t.fn(actor, args or {})
+    finally:
+        _current.actor = _current.scope = None
     if t.scope != "read":
         db.audit(actor.audit_name, f"tool.{name}", args=args)
     return result
@@ -109,12 +125,32 @@ def _date(s: str | None) -> float | None:
 
 
 def _ids(args: dict, key: str = "item_ids") -> list[int]:
+    """Item ids from a tool call that exist, that the caller may see and, for changes, may change."""
     ids = args.get(key) or []
-    found = {r["id"] for r in db.q(f"SELECT id FROM items WHERE id IN ({','.join('?' * len(ids))})", ids)} if ids else set()
+    rows = db.q(f"SELECT id, library_id FROM items WHERE id IN ({','.join('?' * len(ids))})", ids) if ids else []
+    acc = access.library_access(getattr(_current, "actor", None))
+    found = {r["id"]: r["library_id"] for r in rows if acc is None or r["library_id"] in acc}
     missing = [i for i in ids if i not in found]
     if missing:
         raise ToolError(f"No such item id(s): {missing[:20]}")
+    if acc is not None and getattr(_current, "scope", "read") != "read":
+        locked = [i for i in ids if acc.get(found[i]) != "write"]
+        if locked:
+            raise ToolError(f"These items are in libraries you can only look at: {locked[:20]}")
     return ids
+
+
+def _writable_project(actor: Actor, pid: int) -> None:
+    p = db.q1("SELECT * FROM projects WHERE id=?", (pid,))
+    level = access.project_access(actor, p) if p else None
+    if not level:
+        raise ToolError("Project not found.")
+    if level != "write":
+        raise ToolError("You can look at this project but not change it.")
+
+
+def _allowed() -> set[int] | None:
+    return access.library_ids(getattr(_current, "actor", None))
 
 
 KINDS = ["video", "audio", "photo", "red_clip", "braw_clip", "model3d", "gcode", "cad", "pcb", "document"]
@@ -140,12 +176,13 @@ def _search_media(actor: Actor, a: dict):
     return catalog.search(query=a.get("query"), kind=a.get("kind"), library_id=a.get("library_id"),
                           tag=a.get("tag"), date_from=_date(a.get("date_from")), date_to=_date(a.get("date_to")),
                           project_id=a.get("project_id"), sort=a.get("sort", "relevance"),
-                          limit=min(a.get("limit", 25), 200))
+                          limit=min(a.get("limit", 25), 200), allowed=_allowed())
 
 
 @tool("get_item", "Full details for one item: metadata (EXIF, codecs, RED clip info, print stats...), tags, "
       "projects it belongs to.", {"item_id": {"type": "integer"}}, ["item_id"])
 def _get_item(actor: Actor, a: dict):
+    _ids({"item_ids": [a["item_id"]]})
     item = catalog.get_item(a["item_id"], actor.user_id)
     if not item:
         raise ToolError("Item not found.")
@@ -154,12 +191,14 @@ def _get_item(actor: Actor, a: dict):
 
 @tool("list_libraries", "List the media libraries (folders on the NAS) with their type and item counts.")
 def _list_libraries(actor: Actor, a: dict):
-    return db.q("SELECT id, name, kind, item_count, scan_state, last_scan FROM libraries ORDER BY name")
+    allowed = _allowed()
+    return [r for r in db.q("SELECT id, name, kind, item_count, scan_state, last_scan FROM libraries ORDER BY name")
+            if allowed is None or r["id"] in allowed]
 
 
 @tool("library_overview", "Totals by media type, total size, trash count and number of projects.")
 def _overview(actor: Actor, a: dict):
-    return catalog.stats()
+    return catalog.stats(_allowed())
 
 
 @tool("list_groups",
@@ -169,13 +208,13 @@ def _overview(actor: Actor, a: dict):
       {"prefix": {"type": "string", "enum": ["show:", "album:", "day:", "shoot:", "eng:", "movie:", "folder:"]},
        "library_id": {"type": "integer"}, "limit": {"type": "integer"}}, ["prefix"])
 def _list_groups(actor: Actor, a: dict):
-    return catalog.groups(library_id=a.get("library_id"), prefix=a["prefix"], limit=min(a.get("limit", 50), 300))
+    return catalog.groups(library_id=a.get("library_id"), prefix=a["prefix"], limit=min(a.get("limit", 50), 300), allowed=_allowed())
 
 
 @tool("get_group", "All items in one group (an album, a show, a shoot day, a part family).",
       {"group_key": {"type": "string"}, "limit": {"type": "integer"}}, ["group_key"])
 def _get_group(actor: Actor, a: dict):
-    return catalog.search(group=a["group_key"], sort="group", limit=min(a.get("limit", 100), 500))
+    return catalog.search(group=a["group_key"], sort="group", limit=min(a.get("limit", 100), 500), allowed=_allowed())
 
 
 @tool("server_status", "Health of the server: disk space per media root, CPU load, memory, running jobs, versions.")
@@ -210,13 +249,13 @@ def _list_jobs(actor: Actor, a: dict):
 
 @tool("list_projects", "List projects (builds, trips, race weekends...) with item counts and status.")
 def _list_projects(actor: Actor, a: dict):
-    return projects.listing()
+    return projects.listing(actor)
 
 
 @tool("get_project", "Everything in one project: items with roles and notes, a day-by-day summary, notes, and "
       "the current video plan.", {"project_id": {"type": "integer"}}, ["project_id"])
 def _get_project(actor: Actor, a: dict):
-    p = projects.detail(a["project_id"])
+    p = projects.detail(a["project_id"], actor)
     if not p:
         raise ToolError("Project not found.")
     return p
@@ -310,7 +349,7 @@ def _collection(actor: Actor, a: dict):
        "status": {"type": "string", "enum": list(projects.STATUSES)}}, ["name"], scope="write")
 def _create_project(actor: Actor, a: dict):
     pid = projects.create(a["name"], a.get("description", ""), a.get("goal", ""), a.get("location_name"),
-                          status=a.get("status", "active"))
+                          status=a.get("status", "active"), created_by=actor.user_id)
     return {"project_id": pid}
 
 
@@ -321,8 +360,7 @@ def _create_project(actor: Actor, a: dict):
 def _update_project(actor: Actor, a: dict):
     a = dict(a)
     pid = a.pop("project_id")
-    if not db.q1("SELECT 1 FROM projects WHERE id=?", (pid,)):
-        raise ToolError("Project not found.")
+    _writable_project(actor, pid)
     projects.update(pid, **a)
     return {"ok": True}
 
@@ -332,8 +370,7 @@ def _update_project(actor: Actor, a: dict):
        "role": {"type": "string", "enum": list(projects.ROLES)}, "note": {"type": "string"}},
       ["project_id", "item_ids"], scope="write")
 def _add_to_project(actor: Actor, a: dict):
-    if not db.q1("SELECT 1 FROM projects WHERE id=?", (a["project_id"],)):
-        raise ToolError("Project not found.")
+    _writable_project(actor, a["project_id"])
     n = projects.add_items(a["project_id"], _ids(a), a.get("role", "footage"), a.get("note", ""))
     return {"added": n}
 
@@ -341,8 +378,7 @@ def _add_to_project(actor: Actor, a: dict):
 @tool("add_project_note", "Add a note to a project (ideas, to-dos, shot ideas, measurements).",
       {"project_id": {"type": "integer"}, "body": {"type": "string"}}, ["project_id", "body"], scope="write")
 def _note(actor: Actor, a: dict):
-    if not db.q1("SELECT 1 FROM projects WHERE id=?", (a["project_id"],)):
-        raise ToolError("Project not found.")
+    _writable_project(actor, a["project_id"])
     return {"note_id": projects.add_note(a["project_id"], a["body"], actor.audit_name)}
 
 
@@ -351,8 +387,7 @@ def _note(actor: Actor, a: dict):
       {"project_id": {"type": "integer"}, "plan_markdown": {"type": "string"}}, ["project_id", "plan_markdown"],
       scope="write")
 def _save_plan(actor: Actor, a: dict):
-    if not db.q1("SELECT 1 FROM projects WHERE id=?", (a["project_id"],)):
-        raise ToolError("Project not found.")
+    _writable_project(actor, a["project_id"])
     projects.save_plan(a["project_id"], a["plan_markdown"])
     return {"ok": True}
 

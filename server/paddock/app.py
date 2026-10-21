@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__, db, federation, jobs, mcp, portmap, public, tls, transcode, wireguard
-from .api import admin, assistant, auth, clients, federation as federation_api, libraries, media, party as party_api, projects, public_links, share, system as system_api, uploads, voice as voice_api
+from .api import admin, assistant, auth, clients, comments, communities, federation as federation_api, live, libraries, media, party as party_api, projects, public_links, share, system as system_api, uploads, voice as voice_api
 from .api.deps import client_ip, network_zone
 from .config import settings
 
@@ -48,6 +48,15 @@ async def lifespan(app: FastAPI):
     from .party import parties
 
     party_watchdog = asyncio.create_task(parties.watchdog())
+
+    async def end_empty_calls():
+        from .calls import calls
+
+        while True:
+            await asyncio.sleep(20)
+            calls.reap()
+
+    call_reaper = asyncio.create_task(end_empty_calls())
     log.info("Paddock %s ready — data in %s", __version__, settings.data_dir)
     yield
     scheduler.stop.set()
@@ -56,6 +65,7 @@ async def lifespan(app: FastAPI):
     public.site.shutdown()
     transcode.segments.stop_all()
     party_watchdog.cancel()
+    call_reaper.cancel()
 
 
 def create_app() -> FastAPI:
@@ -96,7 +106,8 @@ def create_app() -> FastAPI:
 
     for r in (auth.router, libraries.router, media.router, projects.router, uploads.router, admin.router,
               assistant.router, share.router, federation_api.router, system_api.router, party_api.router,
-              voice_api.router, clients.router, public_links.router, mcp.router):
+              voice_api.router, clients.router, public_links.router, communities.router, comments.router, live.router,
+              mcp.router):
         app.include_router(r)
 
     @app.get("/api/health")
