@@ -17,6 +17,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.ForegroundInfo
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.OutOfQuotaPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
@@ -25,8 +26,13 @@ import app.paddock.R
 import app.paddock.data.HaveResponse
 import app.paddock.data.PaddockJson
 import app.paddock.data.UploadStart
+import app.paddock.net.ApiException
+import app.paddock.net.MediaUris
 import app.paddock.net.Mode
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
@@ -39,11 +45,16 @@ import java.util.concurrent.TimeUnit
 
 /**
  * What happened to backups, in plain words, so nothing fails quietly: the current state ("Waiting for your home
- * Wi-Fi", "Backed up 12 photos") and the files that didn't make it with the server's reason. Shown under You →
- * Photo backup; problems also raise a notification.
+ * Wi-Fi", "Backed up 12 photos") and the files that didn't make it with the server's reason. Shown in the banner
+ * above the navigation bar and under You → Photo backup; problems also raise a notification when Android allows it.
  */
 object BackupReport {
-    data class Problem(val name: String, val reason: String, val at: Long)
+    /** [uri] and [project] are set for picked files, so "Try again" can send exactly those again. */
+    data class Problem(val name: String, val reason: String, val at: Long, val uri: String? = null, val project: Int = 0)
+
+    private val _changes = MutableStateFlow(0)
+    /** Goes up whenever the list changes, so whatever's on screen can redraw. */
+    val changes: StateFlow<Int> = _changes
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("backup-report", Context.MODE_PRIVATE)
 
@@ -55,17 +66,58 @@ object BackupReport {
 
     fun problems(ctx: Context): List<Problem> = runCatching {
         val arr = org.json.JSONArray(prefs(ctx).getString("problems", "[]"))
-        (0 until arr.length()).map { i -> arr.getJSONObject(i).let { Problem(it.getString("name"), it.getString("reason"), it.getLong("at")) } }
+        (0 until arr.length()).map { i ->
+            arr.getJSONObject(i).let { Problem(it.getString("name"), it.getString("reason"), it.getLong("at"), if (it.has("uri")) it.getString("uri") else null, it.optInt("project")) }
+        }
     }.getOrDefault(emptyList())
 
-    @Synchronized fun failed(ctx: Context, name: String, reason: String) {
-        val list = (problems(ctx).filter { it.name != name } + Problem(name, reason, System.currentTimeMillis())).takeLast(50)
+    private fun save(ctx: Context, list: List<Problem>) {
         val arr = org.json.JSONArray()
-        list.forEach { arr.put(org.json.JSONObject().put("name", it.name).put("reason", it.reason).put("at", it.at)) }
+        list.forEach { pr ->
+            val o = org.json.JSONObject().put("name", pr.name).put("reason", pr.reason).put("at", pr.at).put("project", pr.project)
+            pr.uri?.let { o.put("uri", it) }
+            arr.put(o)
+        }
         prefs(ctx).edit().putString("problems", arr.toString()).apply()
+        _changes.value++
     }
 
-    fun clear(ctx: Context) { prefs(ctx).edit().remove("problems").apply() }
+    @Synchronized fun failed(ctx: Context, name: String, reason: String, uri: String? = null, project: Int = 0) {
+        val all = problems(ctx)
+        val old = all.firstOrNull { it.name == name }
+        // backup hits the same wall every half hour: that's old news once dismissed. A file someone just picked isn't.
+        val at = if (uri == null && old?.reason == reason) old.at else System.currentTimeMillis()
+        save(ctx, (all.filter { it.name != name } + Problem(name, reason, at, uri, project)).takeLast(50))
+    }
+
+    /** A file that failed earlier has made it. */
+    @Synchronized fun resolved(ctx: Context, name: String) {
+        val all = problems(ctx)
+        if (all.any { it.name == name }) save(ctx, all.filter { it.name != name })
+    }
+
+    @Synchronized fun clear(ctx: Context) {
+        prefs(ctx).edit().remove("problems").apply()
+        _changes.value++
+    }
+
+    /** The problems nobody has dismissed from the banner yet. */
+    fun unseen(ctx: Context): List<Problem> = prefs(ctx).getLong("seen_at", 0).let { seen -> problems(ctx).filter { it.at > seen } }
+
+    fun markSeen(ctx: Context) {
+        prefs(ctx).edit().putLong("seen_at", System.currentTimeMillis()).apply()
+        _changes.value++
+    }
+
+    /** Send everything that failed again: picked files by their address, the rest through the backup scan. */
+    fun retry(ctx: Context) {
+        val all = problems(ctx)
+        clear(ctx)
+        all.filter { it.uri != null }.groupBy { it.project }.forEach { (project, list) ->
+            ManualUpload.enqueue(ctx, list.map { Uri.parse(it.uri) }, project.takeIf { it > 0 })
+        }
+        if (all.any { it.uri == null }) Backup.runNow(ctx)
+    }
 
     /** Tell the person, once per kind of problem, without nagging. */
     fun notify(ctx: Context, title: String, text: String) {
@@ -80,11 +132,90 @@ object BackupReport {
 
     /** The server's own words when it gave them, else what probably happened. */
     fun reason(e: Throwable): String = when {
-        e is app.paddock.net.ApiException && e.message?.isNotBlank() == true -> e.message!!
+        e is ApiException && e.message?.isNotBlank() == true -> e.message!!
+        e is Unreadable -> e.message!!
         e is java.io.FileNotFoundException || e is SecurityException -> "The phone wouldn't let Paddock read this file"
         e is java.net.SocketTimeoutException -> "The server took too long to answer"
         e is java.io.IOException -> "The connection to the server dropped"
+        e is OutOfMemoryError -> "The phone ran out of memory sending this file"
         else -> e.message ?: "Something went wrong"
+    }
+}
+
+/** The file couldn't be read on the phone. No amount of retrying the connection will help. */
+class Unreadable(message: String, cause: Throwable? = null) : Exception(message, cause)
+
+/**
+ * What picked files are doing right now, for the banner above the navigation bar. A worker that retries starts its
+ * list over, so this keeps an outcome per file instead of counting up.
+ */
+object UploadStatus {
+    enum class Outcome { Uploaded, Already, Failed }
+
+    data class State(
+        val total: Int, val finished: Int, val uploaded: Int, val already: Int, val failed: Int,
+        val current: String?, val share: Float, val waiting: String?,
+    ) {
+        val running get() = finished < total
+        /** How far along the whole batch is, counting the file in progress. */
+        val fraction get() = if (total == 0) 0f else (finished + share) / total
+    }
+
+    private val queued = linkedSetOf<String>()
+    private val outcomes = HashMap<String, Outcome>()
+    private var current: String? = null
+    private var share = 0f
+    private var waiting: String? = null
+    private val _state = MutableStateFlow<State?>(null)
+    val state: StateFlow<State?> = _state
+    private val _landed = MutableStateFlow(0)
+    /** Goes up when a batch that added something finishes, so the photo grid can show it. */
+    val landed: StateFlow<Int> = _landed
+
+    private fun publish() {
+        val n = { o: Outcome -> outcomes.values.count { it == o } }
+        _state.value = if (queued.isEmpty()) null
+            else State(queued.size, outcomes.size, n(Outcome.Uploaded), n(Outcome.Already), n(Outcome.Failed), current, share, waiting)
+    }
+
+    /** New files picked. They start fresh, even ones that failed a moment ago. */
+    @Synchronized fun queue(uris: List<String>) {
+        if (outcomes.size >= queued.size) { queued.clear(); outcomes.clear() }  // the last batch is over
+        queued += uris
+        uris.forEach { outcomes.remove(it) }
+        waiting = null
+        publish()
+    }
+
+    /** A worker picking its list up: it may have outlived the app's memory, or be retrying after a dropped connection. */
+    @Synchronized fun remaining(uris: List<String>): List<String> {
+        queued += uris
+        publish()
+        return uris.filter { it !in outcomes }
+    }
+
+    @Synchronized fun working(name: String, fraction: Float) {
+        current = name; share = fraction.coerceIn(0f, 1f); waiting = null
+        publish()
+    }
+
+    @Synchronized fun waiting(why: String) {
+        current = null; share = 0f; waiting = why
+        publish()
+    }
+
+    @Synchronized fun finished(uri: String, outcome: Outcome) {
+        outcomes[uri] = outcome
+        current = null; share = 0f; waiting = null
+        publish()
+        if (outcomes.size >= queued.size && outcomes.values.any { it == Outcome.Uploaded }) _landed.value++
+    }
+
+    /** Forget the batch: it's over, or was cancelled. */
+    @Synchronized fun dismiss() {
+        queued.clear(); outcomes.clear()
+        current = null; share = 0f; waiting = null
+        publish()
     }
 }
 
@@ -137,7 +268,7 @@ class BackupWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
     private val app = PaddockApp.instance
     private val prefs = ctx.getSharedPreferences("backup-state", Context.MODE_PRIVATE)
 
-    data class Media(val id: Long, val uri: Uri, val name: String, val size: Long, val taken: Long, val added: Long, val video: Boolean)
+    data class Media(val id: Long, val uri: Uri, val name: String, val taken: Long, val added: Long, val video: Boolean)
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val ctx = applicationContext
@@ -170,18 +301,19 @@ class BackupWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
         try {
             for (batch in pending.chunked(50)) {
                 val hashed = batch.mapNotNull { m ->
-                    runCatching { m to sha256(m.uri) }.onFailure { BackupReport.failed(ctx, m.name, BackupReport.reason(it)); failed++ }.getOrNull()
+                    runCatching { m to Transfer.measure(ctx, m.uri) }.onFailure { BackupReport.failed(ctx, m.name, BackupReport.reason(it)); failed++ }.getOrNull()
                 }
                 val have = app.api.post<HaveResponse>("/api/uploads/check", buildJsonObject {
-                    put("sha256", JsonArray(hashed.map { JsonPrimitive(it.second) }))
+                    put("sha256", JsonArray(hashed.map { JsonPrimitive(it.second.sha256) }))
                 }).have.toSet()
-                for ((m, hash) in hashed) {
+                for ((m, file) in hashed) {
                     if (isStopped) return@withContext Result.retry()
                     try {
-                        if (hash !in have) upload(m, hash)
+                        if (file.sha256 !in have) Transfer.upload(ctx, file, m.name, m.taken)
                         markDone(m)
+                        BackupReport.resolved(ctx, m.name)
                         done++
-                    } catch (e: app.paddock.net.ApiException) {
+                    } catch (e: ApiException) {
                         failed++
                         BackupReport.failed(ctx, m.name, BackupReport.reason(e))
                         when (e.code) {
@@ -226,7 +358,7 @@ class BackupWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
         val sources = mutableListOf(MediaStore.Images.Media.EXTERNAL_CONTENT_URI to false)
         if (app.settings.backupVideos) sources += MediaStore.Video.Media.EXTERNAL_CONTENT_URI to true
         for ((base, video) in sources) {
-            val proj = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.SIZE,
+            val proj = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME,
                 MediaStore.MediaColumns.DATE_ADDED, MediaStore.MediaColumns.DATE_TAKEN)
             ctx.contentResolver.query(base, proj, "${MediaStore.MediaColumns.DATE_ADDED} >= ?", arrayOf((since - 86400).coerceAtLeast(0).toString()),
                 "${MediaStore.MediaColumns.DATE_ADDED} ASC")?.use { c ->
@@ -234,17 +366,13 @@ class BackupWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
                     val id = c.getLong(0)
                     val key = "${if (video) "v" else "i"}$id"
                     if (key in doneIds) continue
-                    val taken = c.getLong(4).takeIf { it > 0 } ?: (c.getLong(3) * 1000)
-                    out += Media(id, ContentUris.withAppendedId(base, id), c.getString(1) ?: "file", c.getLong(2), taken, c.getLong(3), video)
+                    val taken = c.getLong(3).takeIf { it > 0 } ?: (c.getLong(2) * 1000)
+                    out += Media(id, ContentUris.withAppendedId(base, id), c.getString(1) ?: "file", taken, c.getLong(2), video)
                 }
             }
         }
         return out.sortedBy { it.added }
     }
-
-    private fun sha256(uri: Uri) = Transfer.sha256(applicationContext, uri)
-
-    private suspend fun upload(m: Media, hash: String) = Transfer.upload(applicationContext, m.uri, m.name, m.size, m.taken, hash)
 
     private fun markDone(m: Media) {
         val done = prefs.getStringSet("done", emptySet())!!.toMutableSet()
@@ -269,36 +397,83 @@ class BackupWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
 
 /** Hashing + resumable upload, shared by automatic backup and manual uploads. */
 object Transfer {
-    fun originalUri(ctx: Context, uri: Uri): Uri =
-        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED)
-            runCatching { MediaStore.setRequireOriginal(uri) }.getOrDefault(uri) else uri
+    /** A file as the phone actually hands it over: the address that opened, its hash, and its real length. */
+    data class Measured(val uri: Uri, val sha256: String, val size: Long)
 
-    fun sha256(ctx: Context, uri: Uri): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        ctx.contentResolver.openInputStream(originalUri(ctx, uri))!!.use { input ->
-            val buf = ByteArray(1 shl 20)
-            while (true) {
-                val n = input.read(buf)
-                if (n < 0) break
-                md.update(buf, 0, n)
-            }
-        }
-        return md.digest().joinToString("") { "%02x".format(it) }
+    /** What a picked file says about itself. */
+    data class Picked(val name: String, val mime: String?, val takenMs: Long)
+
+    /** The unredacted file (with its GPS) where this address can give it, the plain one where it can't. */
+    private fun bestUri(ctx: Context, uri: Uri): Uri {
+        val allowed = Build.VERSION.SDK_INT >= 29 && MediaUris.acceptsRequireOriginal(uri.authority, uri.path) &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!allowed) return uri
+        val original = runCatching { MediaStore.setRequireOriginal(uri) }.getOrNull() ?: return uri
+        val opens = runCatching { ctx.contentResolver.openInputStream(original)?.use { true } ?: false }.getOrDefault(false)
+        return if (opens) original else uri
     }
 
-    suspend fun upload(ctx: Context, uri: Uri, name: String, size: Long, takenMs: Long, hash: String, projectId: Int? = null) {
+    /** Read the whole file once. Everything sent afterwards uses this, because what a phone reports about a file isn't always so. */
+    fun measure(ctx: Context, uri: Uri): Measured {
+        val best = bestUri(ctx, uri)
+        val md = MessageDigest.getInstance("SHA-256")
+        var size = 0L
+        try {
+            val input = ctx.contentResolver.openInputStream(best) ?: throw java.io.FileNotFoundException("no file behind this address")
+            input.use {
+                val buf = ByteArray(1 shl 20)
+                while (true) {
+                    val n = it.read(buf)
+                    if (n < 0) break
+                    md.update(buf, 0, n)
+                    size += n
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // say what Android said: there's often no log to read on the phone that hit this
+            throw Unreadable("The phone wouldn't let Paddock read this file (${e.message ?: e.javaClass.simpleName})", e)
+        }
+        if (size == 0L) throw Unreadable("The phone handed over an empty file. If this photo is stored in the cloud, open it once so it downloads, then try again.")
+        return Measured(best, md.digest().joinToString("") { "%02x".format(it) }, size)
+    }
+
+    fun describe(ctx: Context, uri: Uri): Picked {
+        val resolver = ctx.contentResolver
+        val name = runCatching {
+            resolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null }
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: "upload"
+        // the photo picker calls this column date_taken and MediaStore datetaken; other file apps have neither
+        val taken = listOf("date_taken", MediaStore.MediaColumns.DATE_TAKEN).firstNotNullOfOrNull { column ->
+            runCatching { resolver.query(uri, arrayOf(column), null, null, null)?.use { if (it.moveToFirst()) it.getLong(0).takeIf { ms -> ms > 0 } else null } }.getOrNull()
+        }
+        return Picked(name, runCatching { resolver.getType(uri) }.getOrNull(), taken ?: System.currentTimeMillis())
+    }
+
+    /** True when the file is newly on the server (or back from its trash), false when it was already there. */
+    suspend fun upload(ctx: Context, file: Measured, name: String, takenMs: Long, projectId: Int? = null, mime: String? = null,
+                       onSent: (Float) -> Unit = {}): Boolean {
         val app = PaddockApp.instance
+        val size = file.size
         val start = app.api.post<UploadStart>("/api/uploads", buildJsonObject {
-            put("filename", name); put("size", size); put("sha256", hash); put("taken_at", takenMs / 1000.0)
+            put("filename", name); put("size", size); put("sha256", file.sha256); put("taken_at", takenMs / 1000.0)
+            if (mime != null) put("mime", mime)
             if (projectId != null) put("project_id", projectId)
         })
-        if (start.status == "duplicate") return
+        if (start.status == "duplicate") return start.restored
         val id = start.upload_id!!
         var offset = start.offset
         val octet = "application/octet-stream".toMediaType()
-        ctx.contentResolver.openInputStream(originalUri(ctx, uri))!!.use { input ->
+        ctx.contentResolver.openInputStream(file.uri)!!.use { input ->
             var skipped = 0L
-            while (skipped < offset) skipped += input.skip(offset - skipped)
+            while (skipped < offset) {
+                val s = input.skip(offset - skipped)
+                if (s > 0) { skipped += s; continue }
+                // skip() may do nothing without being at the end: a read tells the difference
+                if (input.read() < 0) throw java.io.EOFException("The file got shorter while it was uploading")
+                skipped++
+            }
             val buf = ByteArray(start.chunk_size.toInt())
             while (offset < size) {
                 var n = 0
@@ -308,55 +483,124 @@ object Transfer {
                     n += r
                 }
                 if (n == 0) break
-                val res = app.api.raw("PUT", "/api/uploads/$id?offset=$offset", buf.copyOf(n).toRequestBody(octet), timeoutS = 300)
+                val res = app.api.raw("PUT", "/api/uploads/$id?offset=$offset", buf.toRequestBody(octet, 0, n), timeoutS = 300)
                 offset = (PaddockJson.parseToJsonElement(res) as kotlinx.serialization.json.JsonObject)["offset"].toString().toLong()
+                onSent(offset.toFloat() / size)
             }
         }
         app.api.raw("POST", "/api/uploads/$id/complete", timeoutS = 600)
+        return true
     }
 }
 
 /** Files picked with the "+" button: same resumable, verified upload, run in the background. */
 object ManualUpload {
+    private const val WORK = "paddock-manual-upload"
+
     /** Upload files picked on the phone, into the person's library or straight into a project. */
     fun enqueue(ctx: Context, uris: List<Uri>, projectId: Int? = null) {
+        if (uris.isEmpty()) return
         uris.forEach { runCatching { ctx.contentResolver.takePersistableUriPermission(it, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
-        val req = OneTimeWorkRequestBuilder<ManualUploadWorker>()
-            .setInputData(androidx.work.workDataOf("uris" to uris.map { it.toString() }.toTypedArray(), "project" to (projectId ?: 0)))
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-            .build()
-        WorkManager.getInstance(ctx).enqueue(req)
+        val texts = uris.map { it.toString() }
+        UploadStatus.queue(texts)
+        // one after another, however many times "+" is pressed. No network requirement: Android's means "has internet",
+        // which a home network might not, and the worker can say when it can't reach the server, which Android can't.
+        val requests = batches(texts).map { batch ->
+            OneTimeWorkRequestBuilder<ManualUploadWorker>()
+                .setInputData(androidx.work.workDataOf("uris" to batch.toTypedArray(), "project" to (projectId ?: 0)))
+                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)     // someone's waiting on this: start now
+                .build()
+        }
+        var chain = WorkManager.getInstance(ctx).beginUniqueWork(WORK, ExistingWorkPolicy.APPEND_OR_REPLACE, requests.first())
+        requests.drop(1).forEach { chain = chain.then(it) }
+        chain.enqueue()
+    }
+
+    fun cancel(ctx: Context) {
+        WorkManager.getInstance(ctx).cancelUniqueWork(WORK)
+        UploadStatus.dismiss()
+    }
+
+    /** A worker's input has to fit in 10 KB, and a long pick of files with long addresses doesn't. */
+    private fun batches(uris: List<String>): List<List<String>> {
+        val out = mutableListOf<MutableList<String>>()
+        var used = Int.MAX_VALUE
+        for (u in uris) {
+            if (used + u.length > 8000) { out += mutableListOf<String>(); used = 0 }
+            out.last() += u
+            used += u.length + 8
+        }
+        return out
     }
 }
 
 class ManualUploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
+    private val app = PaddockApp.instance
+    private val server get() = app.servers.active?.name ?: "your server"
+
+    /** Older Android runs expedited work as a foreground service and asks for this; newer gets it from setForeground below. */
+    override suspend fun getForegroundInfo(): ForegroundInfo {
+        val n = NotificationCompat.Builder(applicationContext, Backup.CHANNEL)
+            .setSmallIcon(R.drawable.ic_launcher)
+            .setContentTitle("Uploading to $server")
+            .setProgress(0, 0, true)
+            .setOngoing(true)
+            .setSilent(true)
+            .build()
+        return if (Build.VERSION.SDK_INT >= 29) ForegroundInfo(44, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC) else ForegroundInfo(44, n)
+    }
+
+    private fun fail(uri: String, name: String, reason: String, project: Int) {
+        BackupReport.failed(applicationContext, name, reason, uri, project)
+        UploadStatus.finished(uri, UploadStatus.Outcome.Failed)
+    }
+
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val ctx = applicationContext
-        val uris = inputData.getStringArray("uris")?.map { Uri.parse(it) } ?: return@withContext Result.success()
-        val project = inputData.getInt("project", 0).takeIf { it > 0 }
-        if (PaddockApp.instance.conn.ensure() == null) {
-            BackupReport.setStatus(ctx, "Waiting to reach your server to upload ${uris.size} files")
-            return@withContext Result.retry()
-        }
-        val failed = mutableListOf<String>()
-        for (uri in uris) {
-            var name = "upload"; var size = 0L
-            ctx.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME, android.provider.OpenableColumns.SIZE), null, null, null)?.use {
-                if (it.moveToFirst()) { name = it.getString(0) ?: name; size = it.getLong(1) }
+        val uris = UploadStatus.remaining(inputData.getStringArray("uris")?.toList() ?: return@withContext Result.success())
+        val project = inputData.getInt("project", 0)
+        runCatching { setForeground(getForegroundInfo()) }      // carry on if the screen goes off (the system can refuse; it still runs)
+        if (app.conn.ensure() == null) {
+            if (runAttemptCount < ATTEMPTS) {
+                UploadStatus.waiting("Trying to reach $server")
+                return@withContext Result.retry()
             }
+            val why = "Couldn't reach $server. ${app.conn.state.value.detail}".trim()
+            uris.forEach { fail(it, Transfer.describe(ctx, Uri.parse(it)).name, why, project) }
+            return@withContext finish(ctx)
+        }
+        for (text in uris) {
+            val uri = Uri.parse(text)
+            val picked = Transfer.describe(ctx, uri)
             try {
-                Transfer.upload(ctx, uri, name, size, System.currentTimeMillis(), Transfer.sha256(ctx, uri), project)
-            } catch (e: app.paddock.net.ApiException) {
-                BackupReport.failed(ctx, name, BackupReport.reason(e)); failed += name     // the server said no: retrying won't help
+                UploadStatus.working(picked.name, 0f)
+                val file = Transfer.measure(ctx, uri)
+                val landed = Transfer.upload(ctx, file, picked.name, picked.takenMs, project.takeIf { it > 0 }, picked.mime) { UploadStatus.working(picked.name, it) }
+                BackupReport.resolved(ctx, picked.name)
+                UploadStatus.finished(text, if (landed) UploadStatus.Outcome.Uploaded else UploadStatus.Outcome.Already)
+            } catch (e: CancellationException) {
+                throw e                                                                     // stopped, not failed
+            } catch (e: ApiException) {
+                fail(text, picked.name, BackupReport.reason(e), project)                    // the server said no: retrying won't help
             } catch (e: java.io.IOException) {
-                if (runAttemptCount < 5) return@withContext Result.retry()                  // the connection dropped: resume later
-                BackupReport.failed(ctx, name, BackupReport.reason(e)); failed += name
-            } catch (e: Exception) {
-                BackupReport.failed(ctx, name, BackupReport.reason(e)); failed += name
+                if (runAttemptCount < ATTEMPTS) {                                           // the connection dropped: resume later
+                    UploadStatus.waiting("The connection dropped. Paddock will carry on where it left off.")
+                    return@withContext Result.retry()
+                }
+                fail(text, picked.name, BackupReport.reason(e), project)
+            } catch (e: Throwable) {
+                fail(text, picked.name, BackupReport.reason(e), project)
             }
         }
-        if (failed.isNotEmpty()) BackupReport.notify(ctx, if (failed.size == 1) "${failed[0]} didn't upload" else "${failed.size} files didn't upload",
-            BackupReport.problems(ctx).lastOrNull()?.reason ?: "Open Paddock → You to see why.")
-        Result.success()
+        finish(ctx)
     }
+
+    private fun finish(ctx: Context): Result {
+        val problems = BackupReport.unseen(ctx)
+        if (problems.isNotEmpty()) BackupReport.notify(ctx, if (problems.size == 1) "${problems[0].name} didn't upload" else "${problems.size} files didn't upload",
+            problems.last().reason)
+        return Result.success()
+    }
+
+    private companion object { const val ATTEMPTS = 5 }
 }

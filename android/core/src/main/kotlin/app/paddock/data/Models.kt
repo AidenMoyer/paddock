@@ -290,7 +290,7 @@ data class ChatReply(
 )
 
 @Serializable
-data class UploadStart(val status: String, val upload_id: String? = null, val offset: Long = 0, val chunk_size: Long = 8L * 1024 * 1024, val item_id: Int? = null)
+data class UploadStart(val status: String, val upload_id: String? = null, val offset: Long = 0, val chunk_size: Long = 8L * 1024 * 1024, val item_id: Int? = null, val restored: Boolean = false)
 
 @Serializable
 data class HaveResponse(val have: List<String> = emptyList())

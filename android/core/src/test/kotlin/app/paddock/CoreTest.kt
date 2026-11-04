@@ -6,6 +6,7 @@ import app.paddock.live.PartyState
 import app.paddock.live.VoiceGate
 import app.paddock.live.VoiceMixer
 import app.paddock.live.VoiceWire
+import app.paddock.net.MediaUris
 import app.paddock.net.PairCode
 import java.util.Base64
 import kotlin.test.Test
@@ -16,6 +17,15 @@ import kotlin.test.assertTrue
 
 class CoreTest {
     private val json = """{"v":1,"app":"paddock","name":"Pit Lane","lan":["https://192.168.1.5:443"],"pin":"sha256/abc=","code":"xyz","wg":true}"""
+
+    @Test fun onlyRealMediaStoreRowsAreAskedForTheOriginal() {
+        assertTrue(MediaUris.acceptsRequireOriginal("media", "/external/images/media/1000012345"))
+        assertTrue(MediaUris.acceptsRequireOriginal("media", "/external_primary/video/media/7"))
+        assertFalse(MediaUris.acceptsRequireOriginal("media", "/picker/0/com.android.providers.media.photopicker/media/1000012345"))
+        assertFalse(MediaUris.acceptsRequireOriginal("media", "/picker_get_content/0/com.android.providers.media.photopicker/media/1000012345"))
+        assertFalse(MediaUris.acceptsRequireOriginal("com.android.providers.media.documents", "/document/image:1000012345"))
+        assertFalse(MediaUris.acceptsRequireOriginal(null, null))
+    }
 
     @Test fun pairingCodesWorkAsQrTextOrTypedCode() {
         assertEquals("xyz", PairCode.parse(json).code)

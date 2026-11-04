@@ -4,7 +4,10 @@ import app.paddock.MainActivity
 import app.paddock.live.VoiceDock
 import app.paddock.live.Live
 import app.paddock.live.IncomingCall
+import android.Manifest
 import android.app.Activity
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -34,6 +37,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -44,6 +48,7 @@ import androidx.navigation.navArgument
 import app.paddock.PaddockApp
 import app.paddock.R
 import app.paddock.backup.ManualUpload
+import app.paddock.backup.UploadBanner
 import app.paddock.data.Item
 import app.paddock.net.Mode
 import app.paddock.ui.screens.*
@@ -87,6 +92,16 @@ fun PaddockRoot() {
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(50)) { uris ->
         if (uris.isNotEmpty()) ManualUpload.enqueue(ctx, uris)
     }
+    // a call ringing, a watch party starting, an upload that failed while you were elsewhere:
+    // from Android 13 none of them can show until the app asks, so ask once
+    val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 33 && !app.settings.askedNotifications &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            app.settings.askedNotifications = true
+            askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
     UpdatePrompt()
     IncomingCall()
     LaunchedEffect(Unit) {
@@ -94,7 +109,12 @@ fun PaddockRoot() {
     }
     // opened from a notification (a call ringing, a watch party starting)
     LaunchedEffect(Unit) {
-        MainActivity.opens.collect { target -> if (target.startsWith("party/")) nav.go("together") else if (target == "call") nav.go("together") }
+        MainActivity.opens.collect { target ->
+            when {
+                target.startsWith("party/") || target == "call" -> nav.go("together")
+                target == "backup" -> nav.go("you")
+            }
+        }
     }
 
     Scaffold(
@@ -131,7 +151,8 @@ fun PaddockRoot() {
             }
         },
         bottomBar = {
-            Column {
+            Column(if (route in ROOTS) Modifier else Modifier.navigationBarsPadding()) {
+                if (!fullscreen && !inPip) UploadBanner(onOpenDetails = { nav.go("you") })
                 // voice keeps going everywhere in the app; this is where you see and control it
                 if (!fullscreen && !inPip) VoiceDock(onOpen = { nav.go("together") })
                 AnimatedVisibility(route in ROOTS && !inPip, enter = slideInVertically(Motion.enter()) { it }, exit = slideOutVertically(Motion.exit()) { it }) {

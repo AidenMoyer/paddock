@@ -97,12 +97,15 @@ class CheckBody(BaseModel):
 
 @router.post("/check")
 def check(body: CheckBody, actor: Actor = Depends(require_write)):
+    """What this person's phone needn't send. Their trash counts, so backup doesn't bring back what they deleted;
+    a copy only someone else can see doesn't, or their own backup would quietly skip the file."""
     hashes = [h.lower() for h in body.sha256 if re.fullmatch(r"[0-9a-fA-F]{64}", h)]
+    frag, ids = access.clause(access.library_ids(actor))
     have: set[str] = set()
     for i in range(0, len(hashes), 500):
         part = hashes[i:i + 500]
         marks = ",".join("?" * len(part))
-        have |= {r["sha256"] for r in db.q(f"SELECT sha256 FROM items WHERE sha256 IN ({marks})", part)}
+        have |= {r["sha256"] for r in db.q(f"SELECT i.sha256 FROM items i WHERE i.sha256 IN ({marks}){frag}", (*part, *ids))}
     return {"have": sorted(have)}
 
 
@@ -110,26 +113,54 @@ class StartBody(BaseModel):
     filename: str = Field(min_length=1, max_length=400)
     size: int = Field(ge=0, le=MAX_FILE)
     sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+    mime: str | None = Field(default=None, max_length=120)
     taken_at: float | None = None
     library_id: int | None = None
     project_id: int | None = None
     subfolder: str | None = Field(default=None, max_length=200)
 
 
+def _named_by_type(filename: str, mime: str | None) -> str:
+    """Phones can name a picked photo "1000012345" or "1000012345.null"; its type still says what it is."""
+    path = Path(filename.replace("\\", "/"))
+    ext = None if kinds.classify(path.suffix) else kinds.ext_for_mime(mime)
+    return path.stem + ext if ext else filename
+
+
+def _your_copy(sha: str, actor: Actor) -> tuple[dict | None, bool]:
+    """This person's copy of a file and whether it just came back from the trash. Someone else's private copy
+    doesn't count, or they'd be told it's uploaded and never see it. Uploading what's in the trash means they want it."""
+    for row in db.q("SELECT id, kind, library_id, trashed_at FROM items WHERE sha256=? ORDER BY trashed_at IS NOT NULL, id", (sha,)):
+        if not row["trashed_at"] and access.can_read_library(actor, row["library_id"]):
+            return row, False
+        if row["trashed_at"] and access.can_write_library(actor, row["library_id"]):
+            db.x("UPDATE items SET trashed_at=NULL WHERE id=?", (row["id"],))
+            db.audit(actor.audit_name, "items.restored", ids=[row["id"]], count=1, by="upload")
+            return row, True
+    return None, False
+
+
 @router.post("")
 def start(body: StartBody, actor: Actor = Depends(require_write)):
     sha = body.sha256.lower()
-    if not kinds.classify(Path(body.filename).suffix):
-        raise HTTPException(415, f"Paddock doesn't keep {Path(body.filename).suffix or 'files without an extension'} files")
+    filename = _named_by_type(body.filename, body.mime)
+    suffix = Path(filename).suffix
+    if not kinds.classify(suffix):
+        raise HTTPException(415, f"Paddock doesn't keep {suffix} files" if suffix
+                            else "This file has no extension, so Paddock can't tell what kind of file it is")
     lib = _target_library(actor, body.library_id, body.project_id)
-    existing = db.q1("SELECT id, kind FROM items WHERE sha256=?", (sha,))
+    existing, restored = _your_copy(sha, actor)
     if existing:
         if body.project_id:     # already on the server: just put it in the project
             projects.add_items(body.project_id, [existing["id"]], projects.ROLE_FOR_KIND.get(existing["kind"], "reference"))
-        return {"status": "duplicate", "item_id": existing["id"]}
+        return {"status": "duplicate", "item_id": existing["id"], "restored": restored}
     open_up = db.q1("SELECT * FROM uploads WHERE sha256=? AND user_id=? AND status='open'", (sha, actor.user_id))
-    if open_up:
+    if open_up and open_up["size"] == body.size:
         return {"status": "resume", "upload_id": open_up["id"], "offset": open_up["received"], "chunk_size": 8 * 1024 * 1024}
+    if open_up:     # an earlier try measured it wrong: resuming could never finish, so start clean
+        (settings.uploads_tmp_dir / f"{open_up['id']}.part").unlink(missing_ok=True)
+        (settings.uploads_tmp_dir / f"{open_up['id']}.json").unlink(missing_ok=True)
+        db.x("UPDATE uploads SET status='failed', received=0, updated_at=? WHERE id=?", (time.time(), open_up["id"]))
     try:
         free = shutil.disk_usage(lib["path"]).free
     except OSError:
@@ -140,7 +171,7 @@ def start(body: StartBody, actor: Actor = Depends(require_write)):
     now = time.time()
     db.x("INSERT INTO uploads(id, user_id, device_id, filename, size, sha256, taken_at, received, status, created_at, updated_at) "
          "VALUES(?,?,?,?,?,?,?,0,'open',?,?)",
-         (uid, actor.user_id, actor.device_id, _safe_name(body.filename), body.size, sha, body.taken_at, now, now))
+         (uid, actor.user_id, actor.device_id, _safe_name(filename), body.size, sha, body.taken_at, now, now))
     meta = {"library_id": lib["id"], "subfolder": body.subfolder, "project_id": body.project_id}
     (settings.uploads_tmp_dir / f"{uid}.json").write_text(json.dumps(meta))
     return {"status": "new", "upload_id": uid, "offset": 0, "chunk_size": 8 * 1024 * 1024}

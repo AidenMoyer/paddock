@@ -26,7 +26,7 @@ async function pump() {
     next.state = "Starting";
     try {
       const r = await uploadFile(next.file, { ...next.opts, onProgress: (p, s) => { next.progress = p; next.state = s; drawRow(next); } });
-      next.state = r.duplicate ? "Already in Paddock" : "Done";
+      next.state = r.duplicate ? r.said : "Done";
       next.progress = 1;
     } catch (e) {
       next.state = `Didn't upload: ${e.message}`;

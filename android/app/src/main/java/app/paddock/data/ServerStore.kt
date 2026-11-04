@@ -109,6 +109,7 @@ class Settings(context: Context) {
     var backupWifiOnly: Boolean get() = p.getBoolean("wifi_only", true); set(v) = p.edit().putBoolean("wifi_only", v).apply()
     var backupChargingOnly: Boolean get() = p.getBoolean("charging_only", false); set(v) = p.edit().putBoolean("charging_only", v).apply()
     var backupRemote: Boolean get() = p.getBoolean("backup_remote", false); set(v) = p.edit().putBoolean("backup_remote", v).apply()
+    var askedNotifications: Boolean get() = p.getBoolean("asked_notifications", false); set(v) = p.edit().putBoolean("asked_notifications", v).apply()
     var cacheGb: Int get() = p.getInt("cache_gb", 4); set(v) = p.edit().putInt("cache_gb", v).apply()
     /** "smart" = original file when the phone can play it, otherwise the adaptive (Auto) stream. */
     var quality: String get() = p.getString("quality_v2", "smart")!!; set(v) = p.edit().putString("quality_v2", v).apply()

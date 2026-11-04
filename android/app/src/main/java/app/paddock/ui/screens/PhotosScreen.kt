@@ -36,6 +36,10 @@ import app.paddock.data.Item
 import app.paddock.ui.*
 import app.paddock.ui.theme.LocalPaddock
 import app.paddock.live.CommentsSection
+import app.paddock.backup.UploadStatus
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import java.text.DateFormat
 import java.util.Date
 
@@ -50,18 +54,53 @@ fun PhotosScreen(nav: Nav) {
     var loading by remember { mutableStateOf(false) }
     var viewer by remember { mutableStateOf<Int?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    suspend fun page(from: Int) = api.get<List<Item>>("/api/items?kind=photo,video&sort=newest&limit=200&offset=$from")
+    fun worthShowing(item: Item) = item.kind == "photo" || item.library_kind in setOf("photos", "home_videos", "mixed")
     suspend fun more() {
         if (loading || done) return
         loading = true
         try {
-            val page = api.get<List<Item>>("/api/items?kind=photo,video&sort=newest&limit=200&offset=$offset")
-            photos += page.filter { it.kind == "photo" || it.library_kind in setOf("photos", "home_videos", "mixed") }
-            offset += page.size
-            done = page.size < 200
-        } catch (e: Exception) { error = e.message }
-        loading = false
+            val got = page(offset)
+            // something new at the top pushes older items into the next page: never list one twice
+            val shown = photos.mapTo(HashSet()) { it.id }
+            photos += got.filter { worthShowing(it) && it.id !in shown }
+            offset += got.size
+            done = got.size < 200
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            error = e.message
+        } finally {
+            loading = false
+        }
     }
     LaunchedEffect(Unit) { more() }
+    // an upload from this phone just finished: bring in the newest page, and again once its thumbnail has been made
+    val landed by UploadStatus.landed.collectAsState()
+    val landedBefore = remember { UploadStatus.landed.value }
+    LaunchedEffect(landed) {
+        if (landed == landedBefore) return@LaunchedEffect
+        repeat(2) { pass ->
+            if (pass == 1) delay(6000)
+            snapshotFlow { loading }.first { !it }
+            if (viewer != null) return@repeat    // it's holding a position in this list
+            loading = true
+            try {
+                val got = page(0)
+                photos.clear()
+                photos += got.filter(::worthShowing)
+                offset = got.size
+                done = got.size < 200
+                error = null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // what's on screen is still right, just not the newest
+            } finally {
+                loading = false
+            }
+        }
+    }
 
     Box(Modifier.fillMaxSize()) {
         Column {

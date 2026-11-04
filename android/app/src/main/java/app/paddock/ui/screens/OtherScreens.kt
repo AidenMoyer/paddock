@@ -153,10 +153,7 @@ fun ProjectScreen(id: Int, nav: Nav) {
     val ctx = LocalContext.current
     // add photos, videos, sound or any file from the phone straight into this project
     val addFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isNotEmpty()) {
-            ManualUpload.enqueue(ctx, uris, projectId = id)
-            android.widget.Toast.makeText(ctx, "Adding ${uris.size} ${if (uris.size == 1) "file" else "files"} to the project", android.widget.Toast.LENGTH_SHORT).show()
-        }
+        ManualUpload.enqueue(ctx, uris, projectId = id)
     }
     Column(Modifier.fillMaxSize()) {
         TopBar((load as? Load.Ok)?.data?.name ?: "Project", nav)
@@ -334,8 +331,9 @@ fun YouScreen(nav: Nav) {
                 if (backup) TextButton(onClick = { Backup.runNow(ctx) }) { Text("Back up now", color = p.link) }
                 // what happened, in plain words: nothing fails quietly
                 var refresh by remember { mutableIntStateOf(0) }
-                val (status, at) = remember(refresh) { BackupReport.status(ctx) }
-                val problems = remember(refresh) { BackupReport.problems(ctx) }
+                val changes by BackupReport.changes.collectAsState()
+                val (status, at) = remember(refresh, changes) { BackupReport.status(ctx) }
+                val problems = remember(refresh, changes) { BackupReport.problems(ctx) }
                 LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(5000); refresh++ } }
                 if (status.isNotBlank()) Text("$status · ${timeAgo(at / 1000.0)}", color = p.text2, style = MaterialTheme.typography.bodySmall)
                 if (problems.isNotEmpty()) {
@@ -347,8 +345,8 @@ fun YouScreen(nav: Nav) {
                         }
                     }
                     Row {
-                        TextButton(onClick = { BackupReport.clear(ctx); Backup.runNow(ctx); refresh++ }) { Text("Try again", color = p.link) }
-                        TextButton(onClick = { BackupReport.clear(ctx); refresh++ }) { Text("Clear", color = p.text2) }
+                        TextButton(onClick = { BackupReport.retry(ctx) }) { Text("Try again", color = p.link) }
+                        TextButton(onClick = { BackupReport.clear(ctx) }) { Text("Clear", color = p.text2) }
                     }
                 }
                 Text("New photos and videos go to the backup library on your server, keep their location data, and are never uploaded twice.",

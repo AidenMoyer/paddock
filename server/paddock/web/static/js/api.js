@@ -62,10 +62,14 @@ export async function uploadFile(file, { libraryId, subfolder, projectId, onProg
   onProgress?.(0, "Checking…");
   const hash = await sha256(file);
   const start = await api.post("/api/uploads", {
-    filename: file.name, size: file.size, sha256: hash, taken_at: file.lastModified / 1000,
+    filename: file.name, size: file.size, sha256: hash, mime: file.type || null, taken_at: file.lastModified / 1000,
     library_id: libraryId || null, subfolder: subfolder || null, project_id: projectId || null,
   }, { quiet: true });
-  if (start.status === "duplicate") { onProgress?.(1, "Already in Paddock"); return { duplicate: true, item_id: start.item_id }; }
+  if (start.status === "duplicate") {
+    const said = start.restored ? "Back from the trash" : "Already in Paddock";
+    onProgress?.(1, said);
+    return { duplicate: true, said, item_id: start.item_id };
+  }
   let offset = start.offset;
   const chunk = start.chunk_size || 8 * 1024 * 1024;
   while (offset < file.size) {
