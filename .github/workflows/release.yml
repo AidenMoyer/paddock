@@ -63,6 +63,9 @@ jobs:
     container: debian:trixie
     steps:
       - uses: actions/checkout@v7
+      # build.sh installs zstd, so the cache is saved with it. It has to be here for the lookup too, or the lookup never
+      # finds that copy, and every release has to build FFmpeg again and needs ffmpeg.org to be up.
+      - run: apt-get update -qq && apt-get install -y -qq --no-install-recommends zstd
       - id: cache
         uses: actions/cache@v6
         with:

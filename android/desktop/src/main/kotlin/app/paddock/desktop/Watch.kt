@@ -133,8 +133,11 @@ fun WatchScreen(id: Int, partyId: String?) {
             Spacer(Modifier.width(24.dp))
             Column(Modifier.width(380.dp)) {
                 val pc = party
-                if (pc != null) PartyPanel(pc, Modifier.weight(1f))
-                UpNext(upNext, pc)
+                if (pc != null) {
+                    PartyPanel(pc, Modifier.weight(1.4f))
+                    Spacer(Modifier.height(16.dp))
+                }
+                UpNext(upNext, pc, Modifier.weight(1f))
             }
         }
     }
@@ -240,7 +243,7 @@ private fun Details(item: Item, player: VideoPlayer, party: PartyClient?, partyI
 }
 
 @Composable
-private fun UpNext(list: List<Item>, party: PartyClient?) {
+private fun UpNext(list: List<Item>, party: PartyClient?, modifier: Modifier = Modifier) = Column(modifier) {
     val p = LocalPaddock.current
     Text("Up next", style = MaterialTheme.typography.titleMedium, color = p.text, modifier = Modifier.padding(bottom = 8.dp))
     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
