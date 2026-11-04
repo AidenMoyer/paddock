@@ -1,5 +1,8 @@
 package app.paddock.desktop
 
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -183,7 +186,7 @@ private fun ItemGrid(query: String, title: String, emptyText: String, cell: Int 
             loading = true
             scope.launch {
                 runCatching { Connection.api.get<List<Item>>("$query&limit=120&offset=${items.size}") }
-                    .onSuccess { items.addAll(it); done = it.size < 120; err = null }.onFailure { err = it.message }
+                    .onSuccess { items.addAll(it); done = it.size < 120; err = null }.onFailure { err = it.message ?: "Couldn't load this" }
                 loading = false
             }
         }
@@ -202,7 +205,7 @@ private fun ItemGrid(query: String, title: String, emptyText: String, cell: Int 
     }
 }
 
-@Composable fun VideosScreen() = ItemGrid("/api/items?kind=video,red_clip&sort=added", "Videos", "No videos yet")
+@Composable fun VideosScreen() = ItemGrid("/api/items?kind=video,red_clip,braw_clip&sort=added", "Videos", "No videos yet")
 @Composable fun LibraryScreen(id: Int, name: String) = ItemGrid("/api/items?library_id=$id&sort=newest", name, "This library is empty")
 @Composable fun SearchScreen(q: String) = ItemGrid("/api/items?query=${java.net.URLEncoder.encode(q, "UTF-8")}", "Results for \"$q\"", "Nothing matched")
 
@@ -217,7 +220,7 @@ fun GroupScreen(key: String, name: String, music: Boolean) {
     LazyColumn(contentPadding = PaddingValues(24.dp)) {
         item {
             Row(verticalAlignment = Alignment.Bottom) {
-                RemoteImage(list.firstOrNull()?.let { "/api/items/${it.id}/thumb" }, Modifier.size(180.dp).clip(RoundedCornerShape(12.dp)))
+                RemoteImage(list.firstOrNull()?.takeIf { it.has_thumb }?.let { "/api/items/${it.id}/thumb" }, Modifier.size(180.dp).clip(RoundedCornerShape(12.dp)), fallback = Icons.Filled.Album)
                 Spacer(Modifier.width(24.dp))
                 Column {
                     Text(name, style = MaterialTheme.typography.headlineMedium, color = p.text)
@@ -352,7 +355,7 @@ fun PhotoViewerOverlay() {
         IconButton(onClick = { PhotoViewer.close() }, Modifier.align(Alignment.TopEnd).padding(12.dp)) { Icon(Icons.Filled.Close, "Close", tint = Color.White) }
         if (i > 0) IconButton(onClick = { PhotoViewer.step(-1) }, Modifier.align(Alignment.CenterStart).padding(12.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Previous", tint = Color.White) }
         if (i < list.size - 1) IconButton(onClick = { PhotoViewer.step(1) }, Modifier.align(Alignment.CenterEnd).padding(12.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowForward, "Next", tint = Color.White) }
-        Text(listOfNotNull(item.date, item.camera_model, "${i + 1} of ${list.size}").joinToString(" · "), color = Color(0xCCFFFFFF), fontSize = 13.sp,
+        Text(listOfNotNull(fmtDay(item.taken_at), item.camera_model, "${i + 1} of ${list.size}").joinToString(" · "), color = Color(0xCCFFFFFF), fontSize = 13.sp,
             modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp))
     }
 }
@@ -366,10 +369,27 @@ object MusicPlayer {
     private var index = 0
     private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
 
-    init { player.onEnded = { next() } }
+    init { player.onEnded = { current.value?.let { remember(it) }; next() } }
 
     fun play(items: List<Item>, at: Int) { queue.value = items; index = at; start() }
-    fun next() { if (index < queue.value.size - 1) { index++; start() } }
+    fun next() {
+        if (index < queue.value.size - 1) { index++; start(); return }
+        // the album or queue ran out: carry on with something like what just played
+        val last = queue.value.lastOrNull() ?: return
+        if (!Store.settings.autoplay) return
+        scope.launch {
+            val more = runCatching { Connection.api.get<List<Item>>("/api/items/${last.id}/up_next?limit=20") }.getOrDefault(emptyList())
+            val fresh = more.filter { it.kind == "audio" && queue.value.none { q -> q.id == it.id } }
+            if (fresh.isNotEmpty()) { queue.value = queue.value + fresh; index++; start() }
+        }
+    }
+
+    private fun remember(item: Item) {
+        val dur = player.duration.value
+        if (dur > 0) scope.launch {
+            runCatching { Connection.api.post<JsonObject>("/api/items/${item.id}/progress", buildJsonObject { put("position", dur); put("duration", dur) }) }
+        }
+    }
     fun prev() { if (player.position.value > 4) player.seek(0.0) else if (index > 0) { index--; start() } }
     fun stop() { player.pause(); current.value = null }
 
@@ -395,7 +415,7 @@ fun MusicBar() {
     val dur by MusicPlayer.player.duration.collectAsState()
     val t = item ?: return
     Row(Modifier.fillMaxWidth().height(72.dp).background(p.bgElev).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-        RemoteImage("/api/items/${t.id}/thumb", Modifier.size(48.dp).clip(RoundedCornerShape(6.dp)))
+        RemoteImage(if (t.has_thumb) "/api/items/${t.id}/thumb" else null, Modifier.size(48.dp).clip(RoundedCornerShape(6.dp)), fallback = Icons.Filled.Audiotrack)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.width(240.dp)) {
             Text(t.title, color = p.text, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -405,8 +425,7 @@ fun MusicBar() {
         IconButton(onClick = { MusicPlayer.player.toggle() }) { Icon(if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, if (playing) "Pause" else "Play", tint = p.text) }
         IconButton(onClick = { MusicPlayer.next() }) { Icon(Icons.Filled.SkipNext, "Next", tint = p.text) }
         Text(fmtDuration(pos), color = p.text2, fontSize = 12.sp)
-        Slider(value = if (dur > 0) (pos / dur).toFloat().coerceIn(0f, 1f) else 0f, onValueChange = { MusicPlayer.player.seek(it * dur) },
-            modifier = Modifier.weight(1f).padding(horizontal = 12.dp))
+        ThinSlider(if (dur > 0) (pos / dur).toFloat() else 0f, { MusicPlayer.player.seek(it * dur) }, modifier = Modifier.weight(1f).padding(horizontal = 12.dp))
         Text(fmtDuration(dur), color = p.text2, fontSize = 12.sp)
         IconButton(onClick = { MusicPlayer.stop() }) { Icon(Icons.Filled.Close, "Close player", tint = p.text2) }
     }
@@ -449,12 +468,12 @@ fun SettingsScreen() {
                         SoftButton(l, onClick = { Store.setSettings { it.copy(theme = v) } }, active = store.settings.theme == v)
                 }
                 Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Play the next video automatically", color = p.text, modifier = Modifier.weight(1f))
+                    Text("Play the next video or song automatically", color = p.text, modifier = Modifier.weight(1f))
                     Switch(store.settings.autoplay, { v -> Store.setSettings { it.copy(autoplay = v) } })
                 }
             }
         }
-        item {
+        if (store.servers.any { Pairing.tunnelConfig(it) != null }) item {
             Card("Away from home") {
                 Text("At home, Paddock connects directly. Elsewhere, save the tunnel file above and turn the tunnel on in the WireGuard app " +
                     "(wireguard.com/install). Its only route is your Paddock server, so the rest of this computer's traffic is untouched.", color = p.text2)

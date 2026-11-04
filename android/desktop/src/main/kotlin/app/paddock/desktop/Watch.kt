@@ -93,6 +93,11 @@ fun WatchScreen(id: Int, partyId: String?) {
         }
     }
     player.onEnded = {
+        val finished = itemId
+        val length = player.duration.value
+        if (length > 0) scope.launch {
+            runCatching { Connection.api.post<JsonObject>("/api/items/$finished/progress", buildJsonObject { put("position", length); put("duration", length) }) }
+        }
         val next = upNext.firstOrNull()
         if (party != null) party?.next(itemId, next?.id, next?.title ?: "")          // the party's queue first
         else if (next != null && settings.settings.autoplay) itemId = next.id
@@ -102,7 +107,10 @@ fun WatchScreen(id: Int, partyId: String?) {
     Row(Modifier.fillMaxSize().padding(if (full) 0.dp else 24.dp)) {
         Column(Modifier.weight(1f)) {
             Box(Modifier.fillMaxWidth().then(if (full) Modifier.weight(1f) else Modifier.aspectRatio(16f / 9f)).clip(RoundedCornerShape(if (full) 0.dp else 12.dp)).background(Color.Black)) {
-                VideoView(player, Modifier.fillMaxSize())
+                val shown = item
+                if (shown?.kind == "audio") {       // a watch party can be on a song: show its cover, not a black box
+                    RemoteImage(if (shown.has_thumb) "/api/items/${shown.id}/thumb" else null, Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Fit, fallback = Icons.Filled.Audiotrack)
+                } else VideoView(player, Modifier.fillMaxSize())
                 party?.let { Reactions(it, Modifier.align(Alignment.BottomStart).padding(16.dp)) }
             }
             Controls(player, plan, quality, onQuality = { q ->
@@ -168,8 +176,8 @@ private fun Controls(player: VideoPlayer, plan: Playback?, quality: String, onQu
     var menu by remember { mutableStateOf(false) }
     val canControl by (party?.canControl ?: remember { kotlinx.coroutines.flow.MutableStateFlow(true) }).collectAsState()
     Column(Modifier.fillMaxWidth().background(p.bg).padding(horizontal = 8.dp)) {
-        Slider(value = dragging ?: if (dur > 0) (pos / dur).toFloat().coerceIn(0f, 1f) else 0f, enabled = canControl && dur > 0,
-            onValueChange = { dragging = it }, onValueChangeFinished = {
+        ThinSlider(value = dragging ?: if (dur > 0) (pos / dur).toFloat() else 0f, enabled = canControl && dur > 0, modifier = Modifier.fillMaxWidth(),
+            onChange = { dragging = it }, onDone = {
                 val to = (dragging ?: 0f) * dur
                 dragging = null
                 player.seek(to); party?.userSeek(to)
@@ -185,7 +193,7 @@ private fun Controls(player: VideoPlayer, plan: Playback?, quality: String, onQu
             if (error != null) Text("  $error", color = p.danger, fontSize = 13.sp, maxLines = 1)
             Spacer(Modifier.weight(1f))
             Icon(if (volume == 0f) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp, null, tint = p.text2)
-            Slider(volume, { volume = it; player.volume = it.toDouble() }, onValueChangeFinished = { Store.setSettings { s -> s.copy(volume = volume) } },
+            ThinSlider(volume, { volume = it; player.volume = it.toDouble() }, onDone = { Store.setSettings { s -> s.copy(volume = volume) } },
                 modifier = Modifier.width(110.dp))
             Box {
                 TextButton(onClick = { menu = true }) { Text(plan?.qualities?.firstOrNull { it.id == quality }?.label ?: "Quality", color = p.text) }
@@ -208,7 +216,7 @@ private fun Details(item: Item, player: VideoPlayer, party: PartyClient?, partyI
     var msg by remember { mutableStateOf<String?>(null) }
     Column(Modifier.padding(top = 12.dp)) {
         Text(item.title, style = MaterialTheme.typography.titleLarge, color = p.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Text(listOfNotNull(item.show?.let { "$it · Season ${item.season}" }, item.year?.toString() ?: item.date, item.library).joinToString(" · "), color = p.text2)
+        Text(subtitle(item), color = p.text2)
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (partyId == null) BrandButton("Watch together", icon = Icons.Filled.Groups, onClick = {
@@ -239,14 +247,14 @@ private fun UpNext(list: List<Item>, party: PartyClient?) {
         items(list, key = { it.id }) { i ->
             Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { Nav.back(); Nav.go(Screen.Watch(i.id)) }, verticalAlignment = Alignment.Top) {
                 Box(Modifier.width(168.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(8.dp)).background(p.surface2)) {
-                    RemoteImage("/api/items/${i.id}/thumb", Modifier.fillMaxSize())
+                    RemoteImage(if (i.has_thumb) "/api/items/${i.id}/thumb" else null, Modifier.fillMaxSize(), fallback = if (i.kind == "audio") Icons.Filled.Audiotrack else Icons.Filled.Movie)
                     if ((i.duration ?: 0.0) > 0) Text(fmtDuration(i.duration), color = Color.White, fontSize = 11.sp,
                         modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp).background(Color(0xCC000000)).padding(horizontal = 3.dp))
                 }
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text(i.title, color = p.text, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 14.sp)
-                    Text(i.library ?: "", color = p.text2, fontSize = 12.sp, maxLines = 1)
+                    Text(subtitle(i), color = p.text2, fontSize = 12.sp, maxLines = 1)
                     if (party != null) TextButton(onClick = { party.queueAdd(i.id) }, contentPadding = PaddingValues(0.dp)) { Text("+ Party queue", color = p.link, fontSize = 12.sp) }
                 }
             }

@@ -3,7 +3,6 @@ package app.paddock.player
 import android.app.PendingIntent
 import android.content.Intent
 import androidx.annotation.OptIn
-import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.DefaultMediaNotificationProvider
@@ -17,21 +16,6 @@ import app.paddock.R
 class PlaybackService : MediaSessionService() {
     private var session: MediaSession? = null
 
-    /** The player holds one song at a time, so Next goes through [Music], which knows what's coming up. */
-    private class SongPlayer(player: Player) : ForwardingPlayer(player) {
-        private val added = setOf(COMMAND_SEEK_TO_NEXT, COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
-
-        override fun getAvailableCommands(): Player.Commands {
-            val b = super.getAvailableCommands().buildUpon()
-            if (Music.nextSong() != null) added.forEach { b.add(it) }
-            return b.build()
-        }
-        override fun isCommandAvailable(command: Int) = (command in added && Music.nextSong() != null) || super.isCommandAvailable(command)
-        override fun hasNextMediaItem() = Music.nextSong() != null
-        override fun seekToNext() = Music.skip()
-        override fun seekToNextMediaItem() = Music.skip()
-    }
-
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -42,7 +26,7 @@ class PlaybackService : MediaSessionService() {
     private fun start(player: Player) {
         val open = PendingIntent.getActivity(this, 45, Intent(this, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         session?.release()
-        session = MediaSession.Builder(this, SongPlayer(player)).setSessionActivity(open).build()
+        session = MediaSession.Builder(this, player).setSessionActivity(open).build()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo) = session

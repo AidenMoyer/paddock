@@ -135,6 +135,14 @@ def test_upload_checksum_mismatch(admin):
     assert admin.post(f"/api/uploads/{up['upload_id']}/complete").status_code == 422
 
 
+def test_plan_says_what_is_on_hand_in_words():
+    from paddock.projects import _material
+
+    assert _material({"footage_minutes": 12.5, "counts_by_kind": {"video": 3, "red_clip": 1, "photo": 1, "audio": 2}}) == "12.5 min of footage, 1 photo, 2 sounds"
+    assert _material({"footage_minutes": 0, "counts_by_kind": {"photo": 2}}) == "2 photos"
+    assert _material({"footage_minutes": 0, "counts_by_kind": {}}) == "nothing yet"
+
+
 def test_projects_plan_and_share(app, admin):
     pid = admin.post("/api/projects", json={"name": "Turbo Manifold", "goal": "Show the build start to finish"}).json()["id"]
     vids = [i["id"] for i in admin.get("/api/items", params={"kind": "video,red_clip"}).json()]

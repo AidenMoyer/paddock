@@ -3,6 +3,7 @@ package app.paddock.desktop
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
@@ -49,12 +50,14 @@ object Images {
 }
 
 @Composable
-fun RemoteImage(path: String?, modifier: Modifier = Modifier, contentScale: ContentScale = ContentScale.Crop, big: Boolean = false) {
+fun RemoteImage(path: String?, modifier: Modifier = Modifier, contentScale: ContentScale = ContentScale.Crop, big: Boolean = false, fallback: androidx.compose.ui.graphics.vector.ImageVector? = null) {
     val p = LocalPaddock.current
     val img by produceState(path?.let { Images.cached(it) }, path) { if (path != null && value == null) value = Images.load(path, big) }
     val bmp = img
     if (bmp != null) Image(bmp, null, modifier, contentScale = contentScale)
-    else Box(modifier.background(p.surface2))
+    else Box(modifier.background(p.surface2), contentAlignment = androidx.compose.ui.Alignment.Center) {
+        if (fallback != null) androidx.compose.material3.Icon(fallback, null, tint = p.text3, modifier = Modifier.fillMaxSize(0.4f))
+    }
 }
 
 /**

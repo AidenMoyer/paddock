@@ -122,6 +122,9 @@ fun PaddockRoot() {
     }
 
     Scaffold(
+        // on its side the system buttons sit beside the app, and nothing should be drawn underneath them
+        modifier = if (route == "watch" || fullscreen || inPip) Modifier
+            else Modifier.windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal).union(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))),
         containerColor = p.bg,
         topBar = {
             AnimatedVisibility(route in ROOTS && !fullscreen && !inPip, enter = fadeIn(Motion.base()), exit = fadeOut(Motion.fast())) {

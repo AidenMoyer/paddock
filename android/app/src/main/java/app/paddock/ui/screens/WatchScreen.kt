@@ -83,8 +83,8 @@ object NowPlaying {
     /** Item whose action sheet (play next / add to queue / share) is open, from anywhere in the app. */
     val actionsFor = mutableStateOf<Item?>(null)
 
-    fun playNext(item: Item) { queue.removeAll { it.id == item.id }; queue.add(0, item) }
-    fun addToQueue(item: Item) { if (queue.none { it.id == item.id }) queue.add(item) }
+    fun playNext(item: Item) { queue.removeAll { it.id == item.id }; queue.add(0, item); Music.prepareFollowing() }
+    fun addToQueue(item: Item) { if (queue.none { it.id == item.id }) queue.add(item); Music.prepareFollowing() }
 }
 
 @OptIn(UnstableApi::class)
@@ -183,6 +183,7 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
         applyCaptions()
         player.prepare()
         player.playWhenReady = partyId == null          // in a watch party the shared clock starts playback
+        if (isSong) Music.prepareFollowing()            // loading replaced the whole playlist
     }
 
     DisposableEffect(id) {
@@ -194,7 +195,9 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
             queue.removeAll { it.id == id }      // it is playing now, so it leaves the queue
             player.stop()
             player.clearMediaItems()
-            load(quality, (plan.resume_at * 1000).toLong())
+            // a song starts from the top whatever happened last time; a long recording picks up where you left it
+            val resume = !isSong || (item.duration ?: 0.0) > 20 * 60
+            load(quality, if (resume) (plan.resume_at * 1000).toLong() else 0L)
         }
         if (isSong) Music.begin(ctx, player, item, upNext)
         val listener = object : Player.Listener {
@@ -206,7 +209,7 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
             }
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 // direct play failed (e.g. the phone's decoder can't do 6K) -> fall back to the transcoded ladder once
-                if (NowPlaying.itemId != id) return
+                if (isSong || NowPlaying.itemId != id) return      // Music moves past a song that won't play
                 val auto = plan.qualities.firstOrNull { it.id == "auto" }
                 if (quality?.id != "auto" && auto != null) { quality = auto; load(auto, player.currentPosition) }
             }
@@ -322,7 +325,7 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
                     CommentsSection(id, position = { player.currentPosition / 1000.0 }, onSeek = { player.seekTo((it * 1000).toLong()) })
                 }
                 if (queue.any { it.id != id }) {
-                    item { QueuePanel(queue.filter { it.id != id }, onOpen = { nav.replace(it) }, onRemove = { r -> queue.removeAll { it.id == r.id } }, onClear = { queue.clear() }) }
+                    item { QueuePanel(queue.filter { it.id != id }, onOpen = { nav.replace(it) }, onRemove = { r -> queue.removeAll { it.id == r.id }; Music.prepareFollowing() }, onClear = { queue.clear(); Music.prepareFollowing() }) }
                 }
                 item {
                     var autoplay by remember { mutableStateOf(app.settings.autoplay) }

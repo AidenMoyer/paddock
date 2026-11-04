@@ -27,7 +27,12 @@ function ensure() {
     iconBtn("close", "Close player", stop));
   audio.addEventListener("play", () => els.play.replaceChildren(icon("pause")));
   audio.addEventListener("pause", () => els.play.replaceChildren(icon("play")));
-  audio.addEventListener("ended", () => go(index + 1));
+  audio.addEventListener("ended", () => {
+    // so what was just played sinks for a while, and what you listen to together counts as alike
+    const t = queue[index];
+    if (t && audio.duration) api.post(`/api/items/${t.id}/progress`, { position: audio.duration, duration: audio.duration }, { quiet: true }).catch(() => {});
+    go(index + 1);
+  });
   audio.addEventListener("timeupdate", () => {
     if (audio.duration) els.fill.style.width = `${(100 * audio.currentTime) / audio.duration}%`;
     els.time.textContent = `${fmtDuration(audio.currentTime)} / ${fmtDuration(audio.duration || queue[index]?.duration)}`;

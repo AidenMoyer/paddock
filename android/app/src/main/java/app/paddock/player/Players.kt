@@ -82,7 +82,8 @@ class Players(private val context: Context) {
                 .setMimeType(MimeTypes.TEXT_VTT).setLabel(it.label).setLanguage(it.label.take(2))
                 .setSelectionFlags(0).build()
         }
-        val b = MediaItem.Builder().setUri(api.absolute(q.url)).setSubtitleConfigurations(subs)
+        val b = MediaItem.Builder().setMediaId(item.id.toString()).setUri(api.absolute(q.url)).setSubtitleConfigurations(subs)
+            .setCustomCacheKey("${q.url}#${item.size}")      // a file that was edited or replaced must not play from its old bytes
             .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder().setTitle(item.title).setArtist(item.artist ?: item.show).setAlbumTitle(item.album).build())
         if (q.type == "hls") b.setMimeType(MimeTypes.APPLICATION_M3U8)
         return b.build()

@@ -10,7 +10,11 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -86,6 +90,33 @@ private fun hoverScale(source: MutableInteractionSource): Float {
 }
 
 /** A video, photo, song or file card: thumbnail with duration/progress, then title and subtitle. */
+/** The second line under a title: who or what it belongs to and when, never a raw timestamp. */
+fun subtitle(item: Item): String = when {
+    item.show != null -> "${item.show} · S${item.season ?: 0} E${item.episode ?: 0}"
+    item.kind == "audio" -> listOfNotNull(item.artist, item.album).joinToString(" · ")
+    else -> listOfNotNull(item.year?.toString() ?: fmtDay(item.taken_at), item.library).joinToString(" · ")
+}
+
+fun fmtDay(ts: Double?): String? = ts?.let {
+    java.time.Instant.ofEpochSecond(it.toLong()).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+        .format(java.time.format.DateTimeFormatter.ofLocalizedDate(java.time.format.FormatStyle.MEDIUM))
+}
+
+/** A thin line with a small dot: lighter than Material's thick slider, and the same on every player. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ThinSlider(value: Float, onChange: (Float) -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, onDone: (() -> Unit)? = null) {
+    val p = LocalPaddock.current
+    val at = value.coerceIn(0f, 1f)
+    Slider(value = at, onValueChange = onChange, onValueChangeFinished = onDone, enabled = enabled, modifier = modifier.height(24.dp),
+        thumb = { Box(Modifier.size(12.dp).background(p.accent, CircleShape)) },
+        track = {
+            Box(Modifier.fillMaxWidth().height(3.dp).clip(CircleShape).background(p.surface3)) {
+                Box(Modifier.fillMaxWidth(at).height(3.dp).background(p.accent))
+            }
+        })
+}
+
 @Composable
 fun ItemCard(item: Item, width: Int = 240, onClick: () -> Unit) {
     val p = LocalPaddock.current
@@ -94,6 +125,7 @@ fun ItemCard(item: Item, width: Int = 240, onClick: () -> Unit) {
     Column(Modifier.width(width.dp).hoverable(src).clickable(interactionSource = src, indication = null, onClick = onClick)) {
         Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).scale(scale).clip(RoundedCornerShape(12.dp)).background(p.surface2)) {
             if (item.has_thumb) RemoteImage("/api/items/${item.id}/thumb", Modifier.fillMaxSize())
+            else Icon(if (item.kind == "audio") Icons.Filled.Audiotrack else Icons.Filled.Movie, null, tint = p.text3, modifier = Modifier.align(Alignment.Center).size(36.dp))
             if (item.duration != null && item.duration!! > 0) {
                 Text(fmtDuration(item.duration), color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium,
                     modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp).clip(RoundedCornerShape(4.dp)).background(Color(0xCC000000)).padding(horizontal = 4.dp, vertical = 1.dp))
@@ -107,8 +139,8 @@ fun ItemCard(item: Item, width: Int = 240, onClick: () -> Unit) {
         }
         Spacer(Modifier.height(8.dp))
         Text(item.title, color = p.text, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        val sub = listOfNotNull(item.show?.let { s -> "$s · S${item.season} E${item.episode}" } ?: item.artist, item.year?.toString() ?: item.date, item.library).take(2)
-        if (sub.isNotEmpty()) Text(sub.joinToString(" · "), color = p.text2, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        val sub = subtitle(item)
+        if (sub.isNotEmpty()) Text(sub, color = p.text2, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -120,10 +152,12 @@ fun GroupCard(g: Group, width: Int = 200, square: Boolean = false, onClick: () -
     Column(Modifier.width(width.dp).hoverable(src).clickable(interactionSource = src, indication = null, onClick = onClick)) {
         Box(Modifier.fillMaxWidth().aspectRatio(if (square) 1f else 16f / 9f).scale(scale).clip(RoundedCornerShape(12.dp)).background(p.surface2)) {
             if (g.cover_id != null) RemoteImage("/api/items/${g.cover_id}/thumb", Modifier.fillMaxSize())
+            else Icon(if (g.group_key.startsWith("album:")) Icons.Filled.Album else Icons.Filled.Tv, null, tint = p.text3, modifier = Modifier.align(Alignment.Center).size(48.dp))
         }
         Spacer(Modifier.height(8.dp))
         Text(g.name, color = p.text, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text("${g.count} items", color = p.text2, fontSize = 13.sp)
+        val what = when { g.group_key.startsWith("album:") -> "song"; g.group_key.startsWith("show:") -> "episode"; else -> "item" }
+        Text("${g.count} $what${if (g.count == 1) "" else "s"}", color = p.text2, fontSize = 13.sp)
     }
 }
 

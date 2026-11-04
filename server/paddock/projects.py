@@ -167,6 +167,17 @@ def outline_for_ai(project_id: int, max_items: int = 300) -> str:
     return "\n".join(lines)
 
 
+def _material(summary: dict) -> str:
+    """'12.5 min of footage, 3 photos' for people, where the summary has kinds like 'red_clip'."""
+    parts = [f"{summary['footage_minutes']} min of footage"] if summary["footage_minutes"] else []
+    for kind, count in summary["counts_by_kind"].items():
+        if kind in ("video", "red_clip", "braw_clip"):
+            continue        # those are the footage
+        name = {"audio": "sound", "model3d": "3D model", "gcode": "G-code file", "pcb": "PCB file"}.get(kind, kind)
+        parts.append(f"{count} {name}{'' if count == 1 else 's'}")
+    return ", ".join(parts) or "nothing yet"
+
+
 def template_plan(project_id: int) -> str:
     """Offline plan when no AI model is configured: chronological structure + checklists."""
     p = detail(project_id)
@@ -174,8 +185,7 @@ def template_plan(project_id: int) -> str:
         return ""
     s = p["summary"]
     out = [f"# Video plan — {p['name']}", "", f"**Goal:** {p['goal'] or 'Describe what the viewer should take away.'}", "",
-           f"Material on hand: {s['footage_minutes']} min of footage, "
-           + ", ".join(f"{v} {k}" for k, v in s["counts_by_kind"].items()), "", "## Story outline", "",
+           f"Material on hand: {_material(s)}", "", "## Story outline", "",
            "1. **Hook (0:00–0:15)** — the most striking shot or the finished result first.",
            "2. **The problem / why** — what this project is and why it matters.",
            "3. **The build / journey** — chronological, one section per day below.",

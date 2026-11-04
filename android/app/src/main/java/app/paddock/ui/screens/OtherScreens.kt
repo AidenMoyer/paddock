@@ -26,6 +26,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -153,6 +157,7 @@ fun ProjectScreen(id: Int, nav: Nav) {
     val (load, retry) = rememberLoad(id, landed) { api.get<ProjectDetail>("/api/projects/$id") }
     var tab by remember { mutableStateOf("media") }
     val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     // add photos, videos, sound or any file from the phone straight into this project
     val addFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         ManualUpload.enqueue(ctx, uris, projectId = id)
@@ -173,12 +178,42 @@ fun ProjectScreen(id: Int, nav: Nav) {
                     "media" -> LazyVerticalGrid(GridCells.Adaptive(220.dp), contentPadding = PaddingValues(16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp)) { items(pr.items) { it -> VideoCard(it, compact = true) { nav.open(it) } } }
                     "plan" -> LazyColumn(contentPadding = PaddingValues(16.dp)) {
+                        if (pr.access == "write") item {
+                            var working by remember { mutableStateOf(false) }
+                            BrandButton(if (working) "Working on it…" else if (pr.plan.isNullOrBlank()) "Make a plan" else "Make a new plan") {
+                                if (working) return@BrandButton
+                                working = true
+                                scope.launch {
+                                    runCatching { api.post<JsonObject>("/api/projects/$id/plan/generate", buildJsonObject { }, timeoutS = 300) }
+                                        .onSuccess { retry() }
+                                        .onFailure { android.widget.Toast.makeText(ctx, it.message ?: "Couldn't make a plan", android.widget.Toast.LENGTH_LONG).show() }
+                                    working = false
+                                }
+                            }
+                            Spacer(Modifier.height(12.dp))
+                        }
                         item {
-                            if (pr.plan.isNullOrBlank()) EmptyState(Icons.Filled.AutoAwesome, "No plan yet", "Generate one from the web app's project page.")
+                            if (pr.plan.isNullOrBlank()) EmptyState(Icons.Filled.AutoAwesome, "No plan yet", "Paddock can lay out what's in this project, day by day, as a starting point.")
                             else MarkdownText(pr.plan!!)
                         }
                     }
                     "notes" -> LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        if (pr.access == "write") item {
+                            var note by remember { mutableStateOf("") }
+                            fun add() {
+                                val body = note.trim()
+                                if (body.isEmpty()) return
+                                note = ""
+                                scope.launch {
+                                    runCatching { api.post<JsonObject>("/api/projects/$id/notes", buildJsonObject { put("body", body) }) }
+                                        .onSuccess { retry() }
+                                        .onFailure { note = body; android.widget.Toast.makeText(ctx, it.message ?: "Couldn't save that note", android.widget.Toast.LENGTH_LONG).show() }
+                                }
+                            }
+                            OutlinedTextField(note, { note = it }, placeholder = { Text("Ideas, shot lists, things to remember…") }, modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp), trailingIcon = { IconButton(onClick = { add() }) { Icon(Icons.AutoMirrored.Filled.Send, "Add note", tint = p.link) } })
+                        }
+                        if (pr.notes.isEmpty()) item { Text("No notes yet.", color = p.text3, modifier = Modifier.padding(top = 8.dp)) }
                         items(pr.notes) { n ->
                             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(p.surface).padding(12.dp)) {
                                 Text("${n.author ?: ""} · ${timeAgo(n.created_at)}", color = p.text3, style = MaterialTheme.typography.labelMedium)
@@ -204,13 +239,22 @@ fun MarkdownText(md: String) {
                 t.startsWith("### ") -> Text(t.drop(4), style = MaterialTheme.typography.titleMedium, color = p.text, modifier = Modifier.padding(top = 10.dp, bottom = 4.dp))
                 t.startsWith("## ") -> Text(t.drop(3), style = MaterialTheme.typography.titleLarge.copy(fontSize = MaterialTheme.typography.titleMedium.fontSize * 1.1f), color = p.text, modifier = Modifier.padding(top = 14.dp, bottom = 4.dp))
                 t.startsWith("# ") -> Text(t.drop(2), style = MaterialTheme.typography.titleLarge, color = p.text, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 6.dp))
-                t.matches(Regex("^\\s*[-*] \\[[ xX]\\] .*")) -> Text((if (t.contains("[x]", true)) "☑ " else "☐ ") + t.substringAfter("] "), color = p.text)
-                t.matches(Regex("^\\s*([-*+]|\\d+[.)]) .*")) -> Text("•  " + t.replace(Regex("^\\s*([-*+]|\\d+[.)]) "), ""), color = p.text, modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
+                t.matches(Regex("^\\s*[-*] \\[[ xX]\\] .*")) -> Text(inlineBold((if (t.contains("[x]", true)) "☑ " else "☐ ") + t.substringAfter("] ")), color = p.text)
+                t.matches(Regex("^\\s*([-*+]|\\d+[.)]) .*")) -> Text(inlineBold("•  " + t.replace(Regex("^\\s*([-*+]|\\d+[.)]) "), "")), color = p.text, modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
                 t.startsWith("|") -> Text(t, color = p.text2, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
                 t.isBlank() -> Spacer(Modifier.height(6.dp))
-                else -> Text(t.replace("**", ""), color = p.text)
+                else -> Text(inlineBold(t), color = p.text)
             }
         }
+    }
+}
+
+/** The bold parts of a line. Markers that don't pair up are left as they were written. */
+private fun inlineBold(text: String): AnnotatedString = buildAnnotatedString {
+    val parts = text.split("**")
+    if (parts.size % 2 == 0) append(text)
+    else parts.forEachIndexed { i, part ->
+        if (i % 2 == 1) withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(part) } else append(part)
     }
 }
 
@@ -378,7 +422,7 @@ fun YouScreen(nav: Nav) {
                 Text("Offline video cache: $cache GB", color = p.text)
                 Slider(value = cache.toFloat(), onValueChange = { cache = it.toInt() }, onValueChangeFinished = { s.cacheGb = cache }, valueRange = 1f..32f, steps = 30, colors = SliderDefaults.colors(activeTickColor = Color.Transparent, inactiveTickColor = Color.Transparent, inactiveTrackColor = p.surface3))
                 var autoplay by remember { mutableStateOf(s.autoplay) }
-                ToggleRow("Autoplay next video", autoplay) { autoplay = it; s.autoplay = it }
+                ToggleRow("Autoplay next video or song", autoplay) { autoplay = it; s.autoplay = it }
             }
         }
         item {
