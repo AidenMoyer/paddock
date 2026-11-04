@@ -273,6 +273,7 @@ def empty_trash(body: EmptyTrashBody, actor: Actor = Depends(require_admin)):
 
 @router.get("/items/{item_id}/thumb")
 def thumb(item_id: int, actor: Actor = Depends(current_actor)):
+    _item_or_404(item_id, actor, include_trashed=True)      # a thumbnail shows what's in the file; the trash page shows them too
     p = thumbs.thumb_path(item_id)
     if not p.exists():
         raise HTTPException(404, "No thumbnail")
@@ -445,6 +446,7 @@ def _queue_trickplay(item: dict, meta: dict) -> None:
 
 @router.get("/items/{item_id}/trickplay/{name}")
 def trickplay_sprite(item_id: int, name: str, actor: Actor = Depends(current_actor)):
+    _item_or_404(item_id, actor)
     if not name.startswith("sprite_") or not name.endswith(".jpg") or "/" in name or "\\" in name:
         raise HTTPException(404, "Not found")
     p = transcode.trickplay_dir(item_id) / name

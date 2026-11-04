@@ -196,3 +196,35 @@ def test_community_watch_party_with_a_queue(admin, people):
             pass
         assert msg["type"] == "queue_empty"
     admin.delete(f"/api/parties/{party['id']}")
+
+
+def test_previews_of_a_limited_library_stay_private(app, admin, people):
+    """Thumbnails and scrubbing previews show what's in a file, so they follow the same rule as the file."""
+    from paddock import thumbs, transcode
+
+    kid, pal, libs = people
+    photo = next(i for i in admin.get("/api/items", params={"library_id": libs["photos"]["id"], "limit": 50}).json() if i["kind"] == "photo")
+    video = next(i for i in admin.get("/api/items", params={"library_id": libs["movies"]["id"], "limit": 50}).json() if i["kind"] == "video")
+    assert admin.get(f"/api/items/{photo['id']}/thumb").status_code == 200 or thumbs.thumb_path(photo["id"]).exists() is False
+    thumbs.thumb_path(photo["id"]).parent.mkdir(parents=True, exist_ok=True)
+    if not thumbs.thumb_path(photo["id"]).exists():
+        thumbs.thumb_path(photo["id"]).write_bytes(b"RIFF....WEBP")
+    sprites = transcode.trickplay_dir(video["id"])
+    sprites.mkdir(parents=True, exist_ok=True)
+    (sprites / "sprite_0.jpg").write_bytes(b"\xff\xd8\xff")
+    try:
+        # open libraries: everyone can look
+        assert kid.get(f"/api/items/{photo['id']}/thumb").status_code == 200
+        assert kid.get(f"/api/items/{video['id']}/trickplay/sprite_0.jpg").status_code == 200
+        for lib in (libs["photos"], libs["movies"]):
+            assert admin.put(f"/api/libraries/{lib['id']}/access", json={"visibility": "communities", "communities": []}).status_code == 200
+        # limited: the same answer as a file that isn't there, and the admin still sees them
+        assert kid.get(f"/api/items/{photo['id']}/thumb").status_code == 404
+        assert kid.get(f"/api/items/{video['id']}/trickplay/sprite_0.jpg").status_code == 404
+        assert kid.post(f"/api/items/{photo['id']}/print", json={"printer": "nope"}).status_code == 404
+        assert admin.get(f"/api/items/{photo['id']}/thumb").status_code == 200
+        assert admin.get(f"/api/items/{video['id']}/trickplay/sprite_0.jpg").status_code == 200
+    finally:
+        for lib in (libs["photos"], libs["movies"]):
+            admin.put(f"/api/libraries/{lib['id']}/access", json={"visibility": "everyone", "communities": []})
+        (sprites / "sprite_0.jpg").unlink(missing_ok=True)

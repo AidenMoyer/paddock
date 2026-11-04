@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from .. import __version__, ai, catalog, db, jobs, printers, red, scanner, tls, tools, transcode, transcribe, wireguard
+from .. import __version__, access, ai, catalog, db, jobs, printers, red, scanner, tls, tools, transcode, transcribe, wireguard
 from ..actor import Actor
 from ..config import settings
 from .auth import lan_urls, server_name
@@ -328,6 +328,9 @@ class PrintBody(BaseModel):
 
 @router.post("/items/{item_id}/print")
 def print_item(item_id: int, body: PrintBody, actor: Actor = Depends(require_write)):
+    item = db.q1("SELECT * FROM items WHERE id=?", (item_id,))
+    if not item or not access.can_read_item(actor, item):
+        raise HTTPException(404, "Not found")
     try:
         return printers.send(item_id, body.printer, body.start)
     except ValueError as e:
