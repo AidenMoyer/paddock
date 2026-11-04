@@ -11,3 +11,6 @@ IPv6AcceptRA=yes
 
 [DHCPv4]
 UseDomains=yes
+# Identify by the network card, not by this install, so upgrading or reinstalling keeps the same address
+# and an address reserved on the router for this machine just works.
+ClientIdentifier=mac

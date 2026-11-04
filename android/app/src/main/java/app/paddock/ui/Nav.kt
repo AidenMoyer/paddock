@@ -160,11 +160,11 @@ fun PaddockRoot() {
                 if (!fullscreen && !inPip && route != "watch") MiniPlayer(onOpen = { nav.go("watch/${it.id}") })
                 // voice keeps going everywhere in the app; this is where you see and control it
                 if (!fullscreen && !inPip) VoiceDock(onOpen = { nav.go("together") })
-                AnimatedVisibility(route in ROOTS && !inPip, enter = slideInVertically(Motion.enter()) { it }, exit = slideOutVertically(Motion.exit()) { it }) {
+                AnimatedVisibility(route in ROOTS && !inPip && !fullscreen, enter = slideInVertically(Motion.enter()) { it }, exit = slideOutVertically(Motion.exit()) { it }) {
                     NavigationBar(containerColor = p.bg, tonalElevation = 0.dp) {
                         NavItem("home", route, Icons.Filled.Home, Icons.Outlined.Home, "Home") { nav.go("home") }
                         NavItem("photos", route, Icons.Filled.Photo, Icons.Outlined.Photo, "Photos") { nav.go("photos") }
-                        NavigationBarItem(selected = false, onClick = { pick.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
+                        if (!mediaOnly) NavigationBarItem(selected = false, onClick = { pick.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
                             icon = { Icon(Icons.Outlined.AddCircleOutline, "Upload", Modifier.size(36.dp)) }, label = null,
                             colors = NavigationBarItemDefaults.colors(unselectedIconColor = p.text, indicatorColor = Color.Transparent))
                         NavItem("together", route, Icons.Filled.Groups, Icons.Outlined.Groups, "Together") { nav.go("together") }
@@ -174,7 +174,7 @@ fun PaddockRoot() {
             }
         },
     ) { pad ->
-        NavHost(controller, startDestination = "home", modifier = Modifier.padding(if (route in ROOTS) pad else PaddingValues(0.dp)),
+        NavHost(controller, startDestination = "home", modifier = Modifier.padding(if (route in ROOTS && !fullscreen) pad else PaddingValues(0.dp)),
             enterTransition = { fadeIn(Motion.enter()) + slideInHorizontally(Motion.enter()) { it / 12 } },
             exitTransition = { fadeOut(Motion.fast()) },
             popEnterTransition = { fadeIn(Motion.enter()) },

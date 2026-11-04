@@ -124,9 +124,10 @@ fun subtitle(it: Item): String = when (it.kind) {
 // ---------- images ----------
 
 @Composable
-fun Thumb(id: Int?, modifier: Modifier = Modifier, contain: Boolean = false, fallback: ImageVector = Icons.Filled.Image, preview: Boolean = false) {
+fun Thumb(id: Int?, modifier: Modifier = Modifier, contain: Boolean = false, fallback: ImageVector = Icons.Filled.Image, preview: Boolean = false,
+          backdrop: Color? = null) {
     val p = LocalPaddock.current
-    Box(modifier.background(p.surface), contentAlignment = Alignment.Center) {
+    Box(modifier.background(backdrop ?: p.surface), contentAlignment = Alignment.Center) {
         if (id != null) {
             val api = PaddockApp.instance.api
             val url = if (preview) api.preview(id) else api.thumb(id)

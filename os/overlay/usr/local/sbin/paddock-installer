@@ -151,6 +151,14 @@ else
   ESP=$(find_part "$DISK" PADDOCK-ESP); ROOT=$(find_part "$DISK" PADDOCK-ROOT); DATA=$(find_part "$DISK" PADDOCK-DATA)
   [ -n "$ESP" ] && [ -n "$ROOT" ] && [ -n "$DATA" ] || fail "Couldn't find the existing Paddock OS partitions on $DISK."
   for p in "$ESP" "$ROOT" "$DATA"; do umount -l "$p" 2>/dev/null; done
+  # how this machine was set up survives the upgrade: a fixed address, and the identity its network knows it by
+  KEEP=$(mktemp -d)
+  if mount -o ro "$ROOT" "$TARGET" 2>>"$LOG"; then
+    for f in etc/machine-id etc/systemd/network/20-wired.network; do
+      if [ -s "$TARGET/$f" ]; then mkdir -p "$KEEP/$(dirname "$f")"; cp -p "$TARGET/$f" "$KEEP/$f"; fi
+    done
+    umount "$TARGET"
+  fi
   run mkfs.vfat -F 32 -n PADDOCK-ESP "$ESP"
 fi
 run mkfs.ext4 -F -q -L PADDOCK-ROOT "$ROOT"
@@ -185,6 +193,7 @@ echo "$HOST" >"$TARGET/etc/hostname"
 printf '127.0.0.1\tlocalhost\n127.0.1.1\t%s\n::1\t\tlocalhost ip6-localhost ip6-loopback\n' "$HOST" >"$TARGET/etc/hosts"
 sed -i "s/^PADDOCK_HOSTNAMES=.*/PADDOCK_HOSTNAMES=$HOST.local/" "$TARGET/etc/paddock/paddock.env"
 : >"$TARGET/etc/machine-id"
+if [ -n "${KEEP:-}" ]; then cp -a "$KEEP/." "$TARGET/"; fi
 
 for m in dev dev/pts proc sys run; do
   case $m in proc) run mount -t proc proc "$TARGET/proc" ;; sys) run mount -t sysfs sys "$TARGET/sys" ;;

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from . import db, engineering, jobs, kinds, probe, red, thumbs
 from .config import settings
+from .jsonsafe import finite
 
 log = logging.getLogger("paddock.scanner")
 
@@ -93,6 +94,9 @@ def scan_library(library_id: int, ctx: jobs.JobContext | None = None, full: bool
         if kind is None:
             continue
         if kind not in accepts:
+            if str(path) in existing:     # someone put it here on purpose (a file added to a project): it stays
+                seen.add(str(path))
+                continue
             if kind != "document":  # stray notes/readmes aren't worth a warning
                 skipped[kind] = skipped.get(kind, 0) + 1
             continue
@@ -284,7 +288,7 @@ def upsert_item(lib: dict, root: Path, path: Path, kind: str, st: os.stat_result
         library_id=lib["id"], path=str(path), rel_path=rel, kind=kind, ext=path.suffix.lower(),
         size=meta.get("total_size", st.st_size), mtime=st.st_mtime, title=title[:300], taken_at=taken,
         duration=duration, width=width, height=height, lat=lat, lon=lon, group_key=group_key,
-        sort_key=sort_key, meta=json.dumps(meta, default=str),
+        sort_key=sort_key, meta=json.dumps(finite(meta), default=str),
     )
     with db.tx():
         if item_id:

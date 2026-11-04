@@ -135,6 +135,12 @@ fun PhotosScreen(nav: Nav) {
         AnimatedVisibility(viewer != null, enter = fadeIn(), exit = fadeOut()) {
             viewer?.let { start -> PhotoViewer(photos, start, onClose = { viewer = null }, onPlay = { nav.open(it) }) }
         }
+        // a photo gets the whole screen: no app bar, no tabs
+        val viewing = viewer != null
+        DisposableEffect(viewing) {
+            NowPlaying.fullscreen.value = viewing
+            onDispose { NowPlaying.fullscreen.value = false }
+        }
     }
 }
 
@@ -145,6 +151,11 @@ fun PhotoViewer(items: List<Item>, start: Int, onClose: () -> Unit, onPlay: (Ite
     var chrome by remember { mutableStateOf(true) }
     var comments by remember { mutableStateOf(false) }
     androidx.activity.compose.BackHandler { onClose() }
+    val activity = androidx.compose.ui.platform.LocalContext.current as android.app.Activity
+    DisposableEffect(Unit) {            // nothing but the photo: a swipe from the edge brings the system bars back for a moment
+        systemBars(activity, hidden = true)
+        onDispose { systemBars(activity, hidden = false) }
+    }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         // swipe sideways between photos like Google Photos; pinch or double-tap to zoom, then drag to look around
         HorizontalPager(pager, beyondViewportPageCount = 2) { page ->
@@ -175,7 +186,7 @@ fun PhotoViewer(items: List<Item>, start: Int, onClose: () -> Unit, onPlay: (Ite
                     })
                 }, contentAlignment = Alignment.Center) {
                 Thumb(it.id, Modifier.fillMaxSize().graphicsLayer { scaleX = scale; scaleY = scale; translationX = offsetX; translationY = offsetY },
-                    contain = true, preview = it.kind == "photo")
+                    contain = true, preview = it.kind == "photo", backdrop = Color.Black)
                 if (it.kind == "video") FilledIconButton(onClick = { onPlay(it) }, modifier = Modifier.size(72.dp)) { Icon(Icons.Filled.PlayArrow, "Play", Modifier.size(40.dp)) }
             }
         }
@@ -193,8 +204,8 @@ fun PhotoViewer(items: List<Item>, start: Int, onClose: () -> Unit, onPlay: (Ite
         }
     }
     if (comments) items.getOrNull(pager.currentPage)?.let { cur ->
-        ModalBottomSheet(onDismissRequest = { comments = false }) {
-            Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()).padding(bottom = 24.dp)) { CommentsSection(cur.id) }
+        ModalBottomSheet(onDismissRequest = { comments = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+            Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()).imePadding().padding(bottom = 64.dp)) { CommentsSection(cur.id) }
         }
     }
 }

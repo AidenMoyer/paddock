@@ -47,6 +47,10 @@ LIBRARY_ACCEPTS = {
 }
 
 
+KIND_NAMES = {"audio": "music", "red_clip": "RED", "braw_clip": "BRAW", "model3d": "3D model", "gcode": "G-code", "cad": "CAD",
+              "pcb": "PCB", "document": "document", "photo": "photo", "video": "video"}
+
+
 def classify(ext: str) -> str | None:
     ext = ext.lower()
     if ext in VIDEO:

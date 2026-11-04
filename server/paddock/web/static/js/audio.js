@@ -38,8 +38,19 @@ function ensure() {
   }
 }
 
+/** The album or queue ran out: carry on with something like what just played, unless autoplay is off. */
+async function carryOn() {
+  const last = queue[queue.length - 1];
+  if (!last || localStorage.getItem("autoplay") === "0") return false;
+  const more = await api.get(`/api/items/${last.id}/up_next?limit=20`, { quiet: true }).catch(() => []);
+  const fresh = more.filter((t) => t.kind === "audio" && !queue.some((q) => q.id === t.id));
+  queue = [...queue, ...fresh];
+  return fresh.length > 0;
+}
+
 async function go(i) {
-  if (i < 0 || i >= queue.length) { if (i >= queue.length) audio.pause(); return; }
+  if (i < 0) return;
+  if (i >= queue.length && !(await carryOn())) { audio.pause(); return; }
   index = i;
   const t = queue[i];
   const plan = await api.get(`/api/items/${t.id}/playback`);

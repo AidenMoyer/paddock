@@ -133,7 +133,7 @@ export function groupCard(g, opts = {}) {
   else box.append(h("div", { class: "fallback" }, icon({ show: "tv", album: "music", shoot: "camera", eng: "cube", day: "photo" }[kind] || "folder")));
   box.append(h("span", { class: "corner" }, `${g.count} ${kind === "album" ? "tracks" : kind === "show" ? "episodes" : kind === "shoot" ? "clips" : kind === "eng" ? "files" : "items"}`));
   const sub = kind === "shoot" ? `${fmtDuration(g.duration)} · ${fmtBytes(g.size)}` :
-    kind === "eng" ? `${timeAgo(g.added)}` : kind === "show" ? `Updated ${timeAgo(g.added)}` : fmtDate(g.last);
+    kind === "eng" ? `${timeAgo(g.added)}` : kind === "show" ? `Updated ${timeAgo(g.added)}` : kind === "album" ? fmtDuration(g.duration) : fmtDate(g.last);
   return h("a", { class: "card", href: groupHref(g) }, box,
     h("div", { class: "info" }, h("div", { class: "txt" }, h("div", { class: "title" }, g.name), h("div", { class: "sub" }, sub))));
 }

@@ -427,6 +427,8 @@ def op_network_set(a: dict) -> dict:
     else:
         raise Refused("mode must be dhcp or static")
     lines += ["MulticastDNS=yes", "LLMNR=no", "IPv6AcceptRA=yes", ""]
+    if mode == "dhcp":      # the same identity as a fresh install: the network card, so the address stays put
+        lines += ["[DHCPv4]", "UseDomains=yes", "ClientIdentifier=mac", ""]
     if NETWORK_FILE.exists() and not NETWORK_BACKUP.exists():
         shutil.copy2(NETWORK_FILE, NETWORK_BACKUP)
     NETWORK_FILE.write_text("\n".join(lines) + "\n")

@@ -322,7 +322,7 @@ fun YouScreen(nav: Nav) {
         }
         item { ConnectionCard(conn.mode, conn.detail) }
         item {
-            Section("Photo backup") {
+            if (app.me.collectAsState().value?.media_only != true || backup) Section("Photo backup") {
                 ToggleRow("Back up photos automatically", backup) { on ->
                     if (on) perms.launch(Backup.permissions()) else { s.backupEnabled = false; backup = false; Backup.schedule(ctx) }
                 }

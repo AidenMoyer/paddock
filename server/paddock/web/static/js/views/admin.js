@@ -29,7 +29,7 @@ export async function render(root, { match }) {
   const nav = h("nav", null, SECTIONS.map(([id, ic, label]) => h("a", { href: `/admin/${id}`, class: id === section ? "active" : "" }, icon(ic, "sm"), label)));
   const body = h("div", { class: "admin-body" });
   root.append(h("div", { class: "admin" }, nav, body));
-  const fn = { overview, system: systemPage, libraries, users, communities: communitiesPage, devices, remote, public: (c) => publicPage(c, timers), servers, assistant, agents, transcoding, transcription, printers, jobs, security, general }[section];
+  const fn = { overview, system: systemPage, libraries, users, communities: communitiesPage, devices, remote, public: (c) => publicPage(c, timers), servers, assistant, agents, transcoding, transcription, printers, jobs, security, general }[section] || overview;     // an old or mistyped link lands somewhere useful
   body.append(loader());
   const content = h("div");
   await fn(content);

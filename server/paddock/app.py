@@ -16,6 +16,7 @@ from . import __version__, db, federation, jobs, mcp, portmap, public, tls, tran
 from .api import admin, assistant, auth, clients, comments, communities, federation as federation_api, live, libraries, media, party as party_api, projects, public_links, share, system as system_api, uploads, voice as voice_api
 from .api.deps import client_ip, network_zone
 from .config import settings
+from .jsonsafe import SafeJSONResponse
 
 log = logging.getLogger("paddock")
 WEB_DIR = Path(__file__).parent / "web"
@@ -69,7 +70,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Paddock", version=__version__, lifespan=lifespan,
+    app = FastAPI(title="Paddock", version=__version__, lifespan=lifespan, default_response_class=SafeJSONResponse,
                   docs_url="/api/docs" if settings.dev_mode else None, redoc_url=None,
                   openapi_url="/api/openapi.json" if settings.dev_mode else None)
 

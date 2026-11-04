@@ -31,7 +31,7 @@ export async function render(root, { match, query }) {
   // what plays next: your queue first, then Up next
   const nextItem = () => queue.next() || upNext[0] || null;
 
-  let player = null;
+  let player = null, nextTimer = null;
   const playerWrap = h("div", { class: "player-wrap" });
   if (plan.mode === "unavailable") {
     playerWrap.append(h("div", { class: "player" }, item.has_thumb ? h("img", { class: "poster-img", src: thumbUrl(id), alt: "" }) : null,
@@ -43,7 +43,7 @@ export async function render(root, { match, query }) {
     player = new Player(item, plan, {
       autoplay: !partyId,                 // in a watch party the shared clock decides when to play
       onTheater: () => { layout.classList.toggle("theater"); localStorage.setItem("theater", layout.classList.contains("theater") ? "1" : "0"); },
-      onEnded: () => { const n = nextItem(); if (n && localStorage.getItem("autoplay") !== "0") setTimeout(() => goNext(n), 1500); },
+      onEnded: () => { const n = nextItem(); if (n && localStorage.getItem("autoplay") !== "0") nextTimer = setTimeout(() => goNext(n), 1500); },
       onNext: () => { const n = nextItem(); if (n) goNext(n); },
       onCues: (cues) => drawTranscript(cues),
       onTime: (t) => highlightTranscript(t),
@@ -208,5 +208,5 @@ export async function render(root, { match, query }) {
     toast("Share link copied — valid 72 h on your network/VPN");
   }
 
-  return { destroy: () => { comments.destroy(); party?.close(); player?.destroy(); window.removeEventListener("paddock:queue", onQueue); } };
+  return { destroy: () => { clearTimeout(nextTimer); comments.destroy(); party?.close(); player?.destroy(); window.removeEventListener("paddock:queue", onQueue); } };
 }

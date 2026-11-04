@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import html
+import math
 import re
 import subprocess
 from pathlib import Path
@@ -195,7 +196,7 @@ def photo_info(path: Path) -> dict:
             if gps.get("GPSLatitude") and gps.get("GPSLongitude"):
                 lat = _dms(gps["GPSLatitude"], gps.get("GPSLatitudeRef"))
                 lon = _dms(gps["GPSLongitude"], gps.get("GPSLongitudeRef"))
-                if lat is not None and lon is not None and not (lat == 0 and lon == 0):
+                if lat is not None and lon is not None and math.isfinite(lat) and math.isfinite(lon) and not (lat == 0 and lon == 0):
                     out["lat"], out["lon"] = round(lat, 6), round(lon, 6)
     except Exception:
         pass

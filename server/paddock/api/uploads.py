@@ -42,10 +42,14 @@ MAX_FILE = 200 * 1024**3
 _senders: dict[str, object] = {}
 
 
-def _target_library(actor: Actor, library_id: int | None, project_id: int | None = None) -> dict:
-    """Where an upload goes: a chosen library, the project's folder, or this person's backup library."""
+def _target_library(actor: Actor, library_id: int | None, project_id: int | None = None, kind: str | None = None) -> dict:
+    """Where an upload goes: a chosen library, the project's folder, or this person's backup library. Left to choose,
+    it picks one that collects that kind of file: a song goes to Music rather than sitting unseen among the photos."""
     def writable(lib: dict | None) -> bool:
         return bool(lib) and access.can_write_library(actor, lib["id"])
+
+    def fits(lib: dict) -> bool:
+        return kind is None or kind in kinds.LIBRARY_ACCEPTS.get(lib["kind"], kinds.LIBRARY_ACCEPTS["mixed"])
 
     if project_id:
         p = db.q1("SELECT * FROM projects WHERE id=?", (project_id,))
@@ -54,10 +58,13 @@ def _target_library(actor: Actor, library_id: int | None, project_id: int | None
         lib = db.q1("SELECT * FROM libraries WHERE id=?", (p["upload_library_id"],)) if p.get("upload_library_id") else None
         if writable(lib):
             return lib
-        for lib in db.q("SELECT * FROM libraries ORDER BY CASE kind WHEN 'mixed' THEN 0 WHEN 'home_videos' THEN 1 "
-                        "WHEN 'engineering' THEN 2 ELSE 3 END, id"):
-            if writable(lib):
+        usable = [lib for lib in db.q("SELECT * FROM libraries ORDER BY CASE kind WHEN 'mixed' THEN 0 WHEN 'home_videos' THEN 1 "
+                                      "WHEN 'engineering' THEN 2 ELSE 3 END, id") if writable(lib)]
+        for lib in usable:
+            if fits(lib):
                 return lib
+        if usable:
+            return usable[0]
         raise HTTPException(409, "There's no library this project can put files in. Ask an admin to add one you can write to.")
     if library_id:
         lib = db.q1("SELECT * FROM libraries WHERE id=?", (library_id,))
@@ -69,16 +76,21 @@ def _target_library(actor: Actor, library_id: int | None, project_id: int | None
     mine = db.q1("SELECT upload_library_id FROM user_settings WHERE user_id=?", (actor.user_id,))
     if mine and mine["upload_library_id"]:
         lib = db.q1("SELECT * FROM libraries WHERE id=?", (mine["upload_library_id"],))
-        if writable(lib):
+        if writable(lib) and fits(lib):
             return lib
     for lib in db.q("SELECT * FROM libraries WHERE kind='photos' ORDER BY id"):
-        if json.loads(lib["options"] or "{}").get("backup_target") and writable(lib):
+        if json.loads(lib["options"] or "{}").get("backup_target") and writable(lib) and fits(lib):
             return lib
-    for lib in db.q("SELECT * FROM libraries WHERE kind IN ('photos','home_videos','mixed') ORDER BY id"):
-        if writable(lib):
+    home = {"audio": "music", "model3d": "engineering", "gcode": "engineering", "cad": "engineering", "pcb": "engineering",
+            "document": "engineering", "red_clip": "red", "braw_clip": "red"}.get(kind or "", "photos")
+    for lib in db.q("SELECT * FROM libraries ORDER BY CASE WHEN kind=? THEN 0 WHEN kind IN ('photos','home_videos','mixed') THEN 1 ELSE 2 END, id", (home,)):
+        if writable(lib) and fits(lib):
             return lib
-    raise HTTPException(409, "There's no Photos library you can back up to yet. Ask an admin to create one "
-                             "(Manage server → Libraries) or to give you access to one.")
+    if kind in (None, "photo", "video"):
+        raise HTTPException(409, "There's no Photos library you can back up to yet. Ask an admin to create one "
+                                 "(Manage server → Libraries) or to give you access to one.")
+    raise HTTPException(409, f"There's no library you can add {kinds.KIND_NAMES.get(kind, kind)} files to yet. Ask an admin to create "
+                             "one (Manage server → Libraries) or to give you access to one.")
 
 
 def _disk_error(e: OSError, where: str) -> HTTPException:
@@ -152,7 +164,7 @@ def start(body: StartBody, actor: Actor = Depends(require_write)):
     if not kinds.classify(suffix):
         raise HTTPException(415, f"Paddock doesn't keep {suffix} files" if suffix
                             else "This file has no extension, so Paddock can't tell what kind of file it is")
-    lib = _target_library(actor, body.library_id, body.project_id)
+    lib = _target_library(actor, body.library_id, body.project_id, kinds.classify(suffix))
     existing, restored = _your_copy(sha, actor)
     if existing:
         if body.project_id:     # already on the server: just put it in the project

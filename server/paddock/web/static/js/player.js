@@ -48,6 +48,7 @@ export class Player {
     this.video = h("video", { playsinline: true, preload: "metadata", crossorigin: "use-credentials" });
     this.root = h("div", { class: `player paused ${isAudio ? "audio" : ""}`, tabindex: "0" });
     if (this.item.has_thumb) this.poster = h("img", { class: "poster-img", src: `/api/items/${this.item.id}/thumb`, alt: "" });
+    else if (isAudio) this.poster = h("div", { class: "poster-img song-mark" }, icon("music"));
     this.bigPlay = h("button", { class: "big-play", "aria-label": "Play", onclick: () => this.toggle() }, icon("play"));
     this.flash = h("div", { class: "flash" });
     this.hintL = h("div", { class: "seek-hint l" }, "« 10s");
@@ -93,7 +94,7 @@ export class Player {
   wire() {
     const v = this.video;
     v.volume = +this.vol.value;
-    v.addEventListener("play", () => { this.root.classList.remove("paused"); this.playBtn.replaceChildren(icon("pause")); this.bigPlay.hidden = true; this.poster?.remove(); this.opts.onPlay?.(); });
+    v.addEventListener("play", () => { this.root.classList.remove("paused"); this.playBtn.replaceChildren(icon("pause")); this.bigPlay.hidden = true; if (this.item.kind !== "audio") this.poster?.remove(); this.opts.onPlay?.(); });
     v.addEventListener("pause", () => { this.root.classList.add("paused"); this.playBtn.replaceChildren(icon("play")); this.saveProgress(true); });
     v.addEventListener("waiting", () => this.root.classList.add("buffering"));
     v.addEventListener("playing", () => this.root.classList.remove("buffering"));

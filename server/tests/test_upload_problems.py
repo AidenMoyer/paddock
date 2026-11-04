@@ -220,3 +220,90 @@ def test_an_upload_that_really_is_unfinished_can_still_resume(app, admin):
     assert admin.post(f"/api/uploads/{uid}/complete").status_code == 409
     again = admin.post("/api/uploads", json={"filename": "IMG_17.jpg", "size": len(data), "sha256": sha}).json()
     assert again["status"] == "resume" and again["upload_id"] == uid and again["offset"] == half
+
+
+def blanked_location(path):
+    """A photo the way Android's photo picker hands it over: the location written as 0/0."""
+    from PIL import Image
+    from PIL.TiffImagePlugin import IFDRational
+
+    exif = Image.Exif()
+    exif[0x0132] = "2026:11:02 12:00:00"
+    gps = exif.get_ifd(0x8825)
+    zero = (IFDRational(0, 0), IFDRational(0, 0), IFDRational(0, 0))
+    gps[1], gps[2], gps[3], gps[4] = "N", zero, "W", zero
+    Image.new("RGB", (64, 48), (200, 80, 40)).save(path, "JPEG", exif=exif)
+    return path
+
+
+def test_a_photo_whose_location_was_blanked_can_be_opened(admin, tmp_path):
+    from paddock import probe
+
+    photo = blanked_location(tmp_path / "picked.jpg")
+    info = probe.photo_info(photo)
+    assert "lat" not in info and "lon" not in info
+    done = send(admin, photo.read_bytes(), "1000000099.jpg")
+    assert done["status"] == "done"
+    r = admin.get(f"/api/items/{done['item_id']}")
+    assert r.status_code == 200, r.text
+    assert r.json().get("lat") is None
+
+
+def test_numbers_that_older_scans_stored_dont_break_a_page(admin):
+    import json
+
+    from paddock import db
+
+    data = b"\xff\xd8\xff" + b"scanned-long-ago" * 40
+    item = send(admin, data, "OLD_1.jpg")["item_id"]
+    db.x("UPDATE items SET meta=? WHERE id=?", ('{"lat": NaN, "lon": NaN, "fps": Infinity, "keep": 7}', item))
+    r = admin.get(f"/api/items/{item}")
+    assert r.status_code == 200, r.text
+    assert json.loads(r.text, parse_constant=lambda c: pytest.fail(f"{c} reached a client"))["meta"]["keep"] == 7
+
+
+def test_a_file_added_to_a_project_survives_a_rescan(admin):
+    from paddock import db, jobs, scanner
+
+    pid = admin.post("/api/projects", json={"name": "Keeps Files", "goal": "x"}).json()["id"]
+    photos = next(l for l in admin.get("/api/libraries").json() if l["kind"] == "photos")
+    admin.patch(f"/api/projects/{pid}", json={"upload_library_id": photos["id"]})
+    db.x("UPDATE projects SET upload_library_id=? WHERE id=?", (photos["id"], pid))
+    done = send(admin, b"notes for the project, nothing a photo library would collect", "plan.txt", project_id=pid)
+    assert done["status"] == "done"
+    assert [i["id"] for i in admin.get(f"/api/projects/{pid}").json()["items"]] == [done["item_id"]]
+    scanner.scan_library(photos["id"])
+    assert [i["id"] for i in admin.get(f"/api/projects/{pid}").json()["items"]] == [done["item_id"]]
+    assert admin.get(f"/api/items/{done['item_id']}").status_code == 200
+
+
+def test_an_upload_left_to_choose_goes_where_that_kind_of_file_belongs(admin):
+    def library_of(data, name):
+        item = send(admin, data, name)["item_id"]
+        return admin.get(f"/api/items/{item}").json()["library_kind"]
+
+    assert library_of(b"ID3" + b"a-song-not-a-photo" * 20, "song.mp3") == "music"
+    assert library_of(b"solid x\nendsolid x\n" * 3, "part.stl") == "engineering"
+    assert library_of(b"\xff\xd8\xff" + b"still-a-photo" * 20, "snap.jpg") in ("photos", "home_videos", "mixed")
+
+
+def test_nowhere_for_that_kind_of_file_says_so(app, admin):
+    from conftest import PASSWORD, client
+
+    libs = admin.get("/api/libraries").json()
+    r = admin.post("/api/users", json={"username": "nolibs", "password": PASSWORD, "is_admin": False})
+    c = client(app, ip="192.168.1.104", headers={"x-paddock": "1"})
+    c.__enter__()
+    c.post("/api/auth/login", json={"username": "nolibs", "password": PASSWORD})
+    try:
+        for l in libs:
+            admin.put(f"/api/libraries/{l['id']}/access", json={"visibility": "communities", "communities": []})
+        reply = c.post("/api/uploads", json={"filename": "song.mp3", "size": 5, "sha256": "b" * 64})
+        assert reply.status_code == 409 and "music files" in reply.json()["detail"]
+        reply = c.post("/api/uploads", json={"filename": "snap.heic", "size": 5, "sha256": "c" * 64})
+        assert reply.status_code == 409 and "Photos library" in reply.json()["detail"]
+    finally:
+        for l in libs:
+            admin.put(f"/api/libraries/{l['id']}/access", json={"visibility": "everyone", "communities": []})
+        c.__exit__(None, None, None)
+        admin.delete(f"/api/users/{r.json()['id']}")
