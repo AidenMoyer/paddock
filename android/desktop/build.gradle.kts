@@ -10,7 +10,7 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
-val appVersion = ((project.findProperty("versionName") as String?) ?: "0.3.1").substringBefore("-")
+val appVersion = ((project.findProperty("versionName") as String?) ?: "0.3.2").substringBefore("-")
 // Windows installers need a major version of at least 1, so Paddock a.b.c installs as 1.(a*100+b).c there
 // (still increasing, so upgrades replace older versions).
 val (vMajor, vMinor, vPatch) = appVersion.split(".").map { it.toIntOrNull() ?: 0 }.let { Triple(it.getOrElse(0) { 0 }, it.getOrElse(1) { 0 }, it.getOrElse(2) { 0 }) }

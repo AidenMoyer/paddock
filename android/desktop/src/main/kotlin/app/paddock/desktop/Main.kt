@@ -43,7 +43,7 @@ import app.paddock.ui.theme.LocalPaddock
 import app.paddock.ui.theme.Motion
 import app.paddock.ui.theme.PaddockTheme
 
-const val APP_VERSION = "0.3.1"
+const val APP_VERSION = "0.3.2"
 
 sealed interface Screen {
     data object Home : Screen
