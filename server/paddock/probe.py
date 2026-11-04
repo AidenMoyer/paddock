@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import html
 import re
 import subprocess
 from pathlib import Path
@@ -117,7 +118,7 @@ def av_info(path: Path) -> dict:
         if ll:
             out["lat"], out["lon"] = ll
     for k in ("make", "model", "com.apple.quicktime.make", "com.apple.quicktime.model", "encoder", "title",
-              "artist", "album", "comment"):
+              "artist", "album", "comment", "genre", "date"):
         if tags.get(k):
             out[k.split(".")[-1]] = tags[k]
     return out
@@ -224,6 +225,51 @@ def audio_tags(path: Path) -> dict:
             out["disc"] = _int(out.pop("discnumber").split("/")[0])
     except Exception:
         pass
+    return out
+
+
+def split_list(value) -> list[str]:
+    """"Electronic; Ambient" is two genres, whichever way a tagger wrote it."""
+    return [x.strip() for x in re.split(r"[;,/|\x00]", str(value or "")) if x.strip()]
+
+
+_NFO_MAX = 512 * 1024
+
+
+def _nfo_files(path: Path) -> list[Path]:
+    """The sidecar for this file, then the movie's or show's own, nearest first."""
+    out = [path.with_suffix(".nfo"), path.parent / "movie.nfo", path.parent / "tvshow.nfo", path.parent.parent / "tvshow.nfo"]
+    return [p for p in out if p.is_file()]
+
+
+def nfo(path: Path) -> dict:
+    """What a Kodi-style .nfo says about a film or show: genres, director, cast and film series. Read as plain text
+    because real-world NFOs are often not valid XML."""
+    out: dict = {}
+    for f in _nfo_files(path):
+        try:
+            if f.stat().st_size > _NFO_MAX:
+                continue
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        def all_of(tag: str, within: str = text) -> list[str]:
+            found = re.findall(rf"<{tag}(?:\s[^>]*)?>(.*?)</{tag}>", within, re.S | re.I)
+            return [html.unescape(x).strip() for x in found if x.strip() and "<" not in x]
+
+        genres = [g for v in all_of("genre") for g in split_list(v)]
+        if genres and "genres" not in out:
+            out["genres"] = genres[:12]
+        directors = all_of("director")
+        if directors and "directors" not in out:
+            out["directors"] = directors[:6]
+        actors = [n for a in re.findall(r"<actor\b.*?</actor>", text, re.S | re.I) for n in all_of("name", a)]
+        if actors and "people" not in out:
+            out["people"] = actors[:15]
+        series = re.search(r"<set\b[^>]*>(?:\s*<name>)?\s*([^<]+?)\s*<", text, re.S | re.I)
+        if series and "set" not in out:
+            out["set"] = html.unescape(series.group(1))
     return out
 
 

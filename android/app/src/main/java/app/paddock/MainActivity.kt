@@ -7,7 +7,10 @@ import android.os.Bundle
 import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.DefaultLifecycleObserver
@@ -27,6 +30,18 @@ class MainActivity : ComponentActivity() {
         })
         setContent {
             val theme by PaddockApp.instance.theme.collectAsState()
+            val dark = when (theme) { "dark" -> true; "light" -> false; else -> isSystemInDarkTheme() }
+            DisposableEffect(dark) {
+                // see-through at the top; a light veil at the bottom keeps the navigation buttons readable over scrolling content
+                val veilOnDark = android.graphics.Color.argb(0x99, 0x11, 0x11, 0x11)
+                val veilOnLight = android.graphics.Color.argb(0xCC, 0xFF, 0xFF, 0xFF)
+                val clear = android.graphics.Color.TRANSPARENT
+                enableEdgeToEdge(
+                    statusBarStyle = if (dark) SystemBarStyle.dark(clear) else SystemBarStyle.light(clear, clear),
+                    navigationBarStyle = if (dark) SystemBarStyle.dark(veilOnDark) else SystemBarStyle.light(veilOnLight, veilOnDark),
+                )
+                onDispose { }
+            }
             PaddockTheme(theme) { PaddockRoot() }
         }
         handle(intent)
@@ -50,7 +65,7 @@ class MainActivity : ComponentActivity() {
     /** Leaving the app while a video plays → keep watching in a floating window. */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (NowPlaying.player?.isPlaying == true) {
+        if (NowPlaying.player?.isPlaying == true && app.paddock.player.Music.song.value == null) {
             runCatching { enterPictureInPictureMode(PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9)).build()) }
         }
     }

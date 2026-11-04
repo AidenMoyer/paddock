@@ -68,11 +68,15 @@ fun PaddockTheme(theme: String = "system", content: @Composable () -> Unit) {
         surface = p.bg, onSurface = p.text, surfaceVariant = p.surface, onSurfaceVariant = p.text2, outline = p.border,
         surfaceContainer = p.surface, surfaceContainerHigh = p.surface2, surfaceContainerHighest = p.surface3,
         surfaceContainerLow = p.bgElev, error = p.danger, tertiary = p.link,
+        primaryContainer = p.surface3, onPrimaryContainer = p.text, secondaryContainer = p.surface3, onSecondaryContainer = p.text,
+        tertiaryContainer = p.surface3, onTertiaryContainer = p.text,
     ) else lightColorScheme(
         primary = p.accent, onPrimary = Color.White, secondary = p.accent2, background = p.bg, onBackground = p.text,
         surface = p.bg, onSurface = p.text, surfaceVariant = p.surface, onSurfaceVariant = p.text2, outline = p.border,
         surfaceContainer = p.surface, surfaceContainerHigh = p.surface2, surfaceContainerHighest = p.surface3,
         surfaceContainerLow = p.bgElev, error = p.danger, tertiary = p.link,
+        primaryContainer = p.surface3, onPrimaryContainer = p.text, secondaryContainer = p.surface3, onSecondaryContainer = p.text,
+        tertiaryContainer = p.surface3, onTertiaryContainer = p.text,
     )
     val shapes = Shapes(
         extraSmall = RoundedCornerShape(Tokens.Radius.xs), small = RoundedCornerShape(Tokens.Radius.sm),

@@ -149,6 +149,19 @@ fun Thumb(id: Int?, modifier: Modifier = Modifier, contain: Boolean = false, fal
 @Composable
 fun VideoCard(item: Item, modifier: Modifier = Modifier, compact: Boolean = false, onClick: () -> Unit) {
     val p = LocalPaddock.current
+    if (item.kind == "audio" && !compact) {
+        Row(modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).combinedClickable(onClick = onClick, onLongClick = { app.paddock.ui.screens.NowPlaying.actionsFor.value = item }),
+            verticalAlignment = Alignment.CenterVertically) {
+            Thumb(if (item.has_thumb) item.id else null, Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)), fallback = Icons.Filled.Audiotrack)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(item.title, color = p.text, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(subtitle(item), color = p.text2, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Text(fmtDuration(item.duration), color = p.text2, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 8.dp))
+        }
+        return
+    }
     var pressed by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (pressed) 0.98f else 1f, Motion.fast(), label = "press")
     val actionable = item.playable

@@ -60,6 +60,7 @@ import app.paddock.live.WatchTogetherDialog
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import app.paddock.player.Music
 import app.paddock.player.Players
 import app.paddock.ui.*
 import app.paddock.ui.theme.LocalPaddock
@@ -118,6 +119,8 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
     }
     val (item, plan, upNext) = (load as Load.Ok).data
     val client = app.conn.client ?: return
+    // a song carries on without this screen (Music); a video and anything in a party lives and dies with it
+    val isSong = item.kind == "audio" && partyId == null
     val player = remember(id) { app.players.player(client) }
     var quality by remember(id) { mutableStateOf(pickQuality(plan, app.settings.quality)) }
     var showSheet by remember { mutableStateOf(false) }
@@ -131,6 +134,15 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
     val inPip by NowPlaying.inPip
     val queue = NowPlaying.queue
     fun next(): Item? = queue.firstOrNull { it.id != id } ?: upNext.firstOrNull()
+    // the song moved on by itself: this screen follows
+    val playingSong = Music.song.value
+    LaunchedEffect(playingSong?.id) { if (isSong && playingSong != null && playingSong.id != id) nav.replace(playingSong) }
+    // on a video the status bar sits on black, so its clock has to be light whatever the theme
+    if (!isSong) DisposableEffect(p.dark) {
+        val bars = WindowCompat.getInsetsController((ctx as Activity).window, ctx.window.decorView)
+        bars.isAppearanceLightStatusBars = false
+        onDispose { bars.isAppearanceLightStatusBars = !p.dark }
+    }
 
     // ---- watch party: the shared clock decides play/pause; voice is optional
     val party = remember(id, partyId) { partyId?.let { PartySession(it, player, id) } }
@@ -155,6 +167,7 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
         }
     }
     fun playNext() {
+        if (isSong) { Music.skip(); return }
         val n = next()
         // in a party: the party's queue first, then this phone's own pick
         if (party != null) { if (party.canControl.value) party.next(id, n?.id, n?.title ?: "") } else if (n != null) nav.replace(n)
@@ -166,7 +179,7 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
     }
     fun load(q: Quality?, at: Long) {
         if (q == null) return
-        player.setMediaItem(app.players.mediaItem(api, q, plan, item.title), at)
+        player.setMediaItem(app.players.mediaItem(api, q, plan, item), at)
         applyCaptions()
         player.prepare()
         player.playWhenReady = partyId == null          // in a watch party the shared clock starts playback
@@ -174,14 +187,19 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
 
     DisposableEffect(id) {
         NowPlaying.player = player
-        NowPlaying.itemId = id
-        queue.removeAll { it.id == id }          // it is playing now, so it leaves the queue
-        player.stop()
-        player.clearMediaItems()
-        load(quality, (plan.resume_at * 1000).toLong())
+        val alreadyPlaying = isSong && Music.song.value?.id == id && player.mediaItemCount > 0   // back from the mini player, or it moved on by itself
+        if (!isSong) Music.release()
+        if (!alreadyPlaying) {
+            NowPlaying.itemId = id
+            queue.removeAll { it.id == id }      // it is playing now, so it leaves the queue
+            player.stop()
+            player.clearMediaItems()
+            load(quality, (plan.resume_at * 1000).toLong())
+        }
+        if (isSong) Music.begin(ctx, player, item, upNext)
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_ENDED && NowPlaying.itemId == id) {
+                if (!isSong && state == Player.STATE_ENDED && NowPlaying.itemId == id) {
                     scope.launch { saveProgress(id, player.duration, player.duration, completed = true) }
                     if (app.settings.autoplay) playNext()
                 }
@@ -200,7 +218,7 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
             scope.launch { saveProgress(id, pos, dur) }
             player.removeListener(listener)
             // the next video may already own the shared player — only stop it if it is still ours
-            if (NowPlaying.itemId == id) {
+            if (!isSong && NowPlaying.itemId == id) {
                 player.stop()
                 player.clearMediaItems()
                 NowPlaying.itemId = null
@@ -223,6 +241,7 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
         }
     }
 
+    if (isSong) DisposableEffect(Unit) { onDispose { NowPlaying.fullscreen.value = false } }
     val playerBox: @Composable (Modifier) -> Unit = { mod ->
         Box(mod.background(Color.Black)) {
             AndroidView(factory = { c ->
@@ -258,19 +277,20 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
         }
     }
 
-    if (fullscreen || inPip) {
+    if ((fullscreen || inPip) && !isSong) {
         playerBox(Modifier.fillMaxSize())
     } else {
         // YouTube layout: the player stays pinned at the top; details, queue and Up next scroll underneath
         Column(Modifier.fillMaxSize()) {
-            Box(Modifier.fillMaxWidth().background(Color.Black).statusBarsPadding()) {
+            if (isSong) SongPlayer(item, player, hasNext = Music.nextSong() != null, onMinimize = { nav.back() }, onSettings = { showSheet = true }, onNext = { playNext() })
+            else Box(Modifier.fillMaxWidth().background(Color.Black).statusBarsPadding()) {
                 playerBox(Modifier.fillMaxWidth().aspectRatio(16f / 9f))
             }
             LazyColumn(Modifier.weight(1f), contentPadding = WindowInsets.navigationBars.asPaddingValues()) {
                 item {
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                         Text(item.title, style = MaterialTheme.typography.titleLarge, color = p.text, fontWeight = FontWeight.Bold)
-                        Text(listOfNotNull(fmtDate(item.taken_at).ifBlank { null }, item.library, quality?.label).joinToString(" · "), color = p.text2,
+                        Text(listOfNotNull(subtitle(item).ifBlank { null }, quality?.label?.takeIf { !isSong }).joinToString(" · "), color = p.text2,
                             style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
                     }
                     LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -313,8 +333,8 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
                     }
                 }
                 items(upNext, key = { it.id }) { r ->
-                    Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                        VideoCard(r) { nav.replace(r) }
+                    Box(Modifier.padding(horizontal = 16.dp, vertical = if (isSong) 6.dp else 8.dp)) {
+                        VideoCard(r) { if (isSong) Music.play(r) else nav.replace(r) }
                         // in a watch party, anything can go on the party's queue
                         if (party != null) FilledTonalButton(onClick = {
                             party.queueAdd(r.id)
@@ -353,6 +373,59 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
                 load(q, player.currentPosition); showSheet = false
             }, onSpeed = { s -> player.setPlaybackSpeed(s); showSheet = false },
                 onLive = { on -> ccOn = on; app.settings.captions = if (on) "on" else "off"; applyCaptions(); showSheet = false })
+        }
+    }
+}
+
+/** A song has nothing to look at but its cover, so it gets music controls instead of a black video box. */
+@Composable
+private fun SongPlayer(item: Item, player: ExoPlayer, hasNext: Boolean, onMinimize: () -> Unit, onSettings: () -> Unit, onNext: () -> Unit) {
+    val p = LocalPaddock.current
+    var playing by remember { mutableStateOf(player.isPlaying) }
+    var position by remember { mutableLongStateOf(player.currentPosition) }
+    var duration by remember { mutableLongStateOf(player.duration.coerceAtLeast(0)) }
+    var buffered by remember { mutableLongStateOf(0L) }
+    var dragging by remember { mutableStateOf<Float?>(null) }
+    LaunchedEffect(player) {
+        while (isActive) {
+            playing = player.isPlaying
+            position = player.currentPosition
+            duration = player.duration.coerceAtLeast(0)
+            buffered = player.bufferedPosition
+            delay(250)
+        }
+    }
+    Column(Modifier.fillMaxWidth().background(p.bgElev).statusBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onMinimize) { Icon(Icons.Filled.KeyboardArrowDown, "Minimize", tint = p.text) }
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = onSettings) { Icon(Icons.Filled.Settings, "Speed", tint = p.text) }
+        }
+        Thumb(if (item.has_thumb) item.id else null, Modifier.size(208.dp).clip(RoundedCornerShape(16.dp)), fallback = Icons.Filled.Album)
+        Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp)) {
+            SeekBar(
+                value = dragging ?: if (duration > 0) position.toFloat() / duration else 0f,
+                buffered = if (duration > 0) buffered.toFloat() / duration else 0f,
+                onChange = { dragging = it },
+                onDone = { dragging?.let { player.seekTo((it * duration).toLong()) }; dragging = null },
+                rest = p.surface3, loaded = p.text3,
+            )
+            Row {
+                Text(fmtDuration((dragging?.let { (it * duration).toLong() } ?: position) / 1000.0), color = p.text2, fontSize = 12.sp)
+                Spacer(Modifier.weight(1f))
+                Text(fmtDuration(duration / 1000.0), color = p.text2, fontSize = 12.sp)
+            }
+        }
+        Row(Modifier.padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+            IconButton(onClick = { player.seekTo(0) }) { Icon(Icons.Filled.SkipPrevious, "Back to the start", tint = p.text, modifier = Modifier.size(32.dp)) }
+            IconButton(onClick = {
+                if (player.playbackState == Player.STATE_ENDED) player.seekTo(0)
+                if (player.isPlaying) player.pause() else player.play()
+                playing = !playing
+            }, Modifier.size(64.dp).clip(CircleShape).background(p.chipActive)) {
+                Icon(if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, if (playing) "Pause" else "Play", tint = p.chipActiveText, modifier = Modifier.size(40.dp))
+            }
+            IconButton(onClick = onNext, enabled = hasNext) { Icon(Icons.Filled.SkipNext, "Next", tint = if (hasNext) p.text else p.text3, modifier = Modifier.size(32.dp)) }
         }
     }
 }

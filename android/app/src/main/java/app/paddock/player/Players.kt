@@ -42,7 +42,7 @@ class Players(private val context: Context) {
     private var sharedClient: OkHttpClient? = null
 
     /** Players must be released on the main thread; server switches can happen from anywhere. */
-    fun reset() = android.os.Handler(android.os.Looper.getMainLooper()).post { shared?.release(); shared = null; sharedClient = null }
+    fun reset() = android.os.Handler(android.os.Looper.getMainLooper()).post { Music.release(); shared?.release(); shared = null; sharedClient = null }
 
     /** One player for the whole app: switching videos reuses decoders and buffers instead of rebuilding them. */
     fun player(client: OkHttpClient): ExoPlayer {
@@ -72,17 +72,18 @@ class Players(private val context: Context) {
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(10_000)
             .setHandleAudioBecomingNoisy(true)
+            .setAudioAttributes(androidx.media3.common.AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
             .build()
     }
 
-    fun mediaItem(api: app.paddock.net.Api, q: Quality, plan: Playback, title: String): MediaItem {
+    fun mediaItem(api: app.paddock.net.Api, q: Quality, plan: Playback, item: app.paddock.data.Item): MediaItem {
         val subs = plan.subtitles.map {
             MediaItem.SubtitleConfiguration.Builder(Uri.parse(api.absolute(it.url)))
                 .setMimeType(MimeTypes.TEXT_VTT).setLabel(it.label).setLanguage(it.label.take(2))
                 .setSelectionFlags(0).build()
         }
         val b = MediaItem.Builder().setUri(api.absolute(q.url)).setSubtitleConfigurations(subs)
-            .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder().setTitle(title).build())
+            .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder().setTitle(item.title).setArtist(item.artist ?: item.show).setAlbumTitle(item.album).build())
         if (q.type == "hls") b.setMimeType(MimeTypes.APPLICATION_M3U8)
         return b.build()
     }

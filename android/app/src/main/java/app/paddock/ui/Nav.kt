@@ -51,6 +51,7 @@ import app.paddock.backup.ManualUpload
 import app.paddock.backup.UploadBanner
 import app.paddock.data.Item
 import app.paddock.net.Mode
+import app.paddock.player.MiniPlayer
 import app.paddock.ui.screens.*
 import app.paddock.ui.theme.LocalPaddock
 import app.paddock.ui.theme.Motion
@@ -58,7 +59,10 @@ import app.paddock.update.UpdatePrompt
 import java.net.URLDecoder
 
 class Nav(val c: NavHostController) {
-    fun go(route: String) = c.navigate(route) { launchSingleTop = true }
+    fun go(route: String) = c.navigate(route) {
+        launchSingleTop = true
+        if (route in ROOTS) popUpTo("home")      // Back from any tab goes Home, then out, however many tabs you've been through
+    }
     fun open(item: Item) = go(if (item.playable) "watch/${item.id}" else "item/${item.id}")
     fun replace(item: Item) { c.popBackStack(); open(item) }
     fun back() { c.popBackStack() }
@@ -153,6 +157,7 @@ fun PaddockRoot() {
         bottomBar = {
             Column(if (route in ROOTS) Modifier else Modifier.navigationBarsPadding()) {
                 if (!fullscreen && !inPip) UploadBanner(onOpenDetails = { nav.go("you") })
+                if (!fullscreen && !inPip && route != "watch") MiniPlayer(onOpen = { nav.go("watch/${it.id}") })
                 // voice keeps going everywhere in the app; this is where you see and control it
                 if (!fullscreen && !inPip) VoiceDock(onOpen = { nav.go("together") })
                 AnimatedVisibility(route in ROOTS && !inPip, enter = slideInVertically(Motion.enter()) { it }, exit = slideOutVertically(Motion.exit()) { it }) {
@@ -179,18 +184,18 @@ fun PaddockRoot() {
             composable("projects") { ProjectsScreen(nav) }
             composable("together") { TogetherScreen(nav) }
             composable("you") { YouScreen(nav) }
-            composable("assistant") { Box(Modifier.statusBarsPadding()) { AssistantScreen() } }
+            composable("assistant") { Box(Modifier.statusBarsPadding().navigationBarsPadding()) { AssistantScreen() } }
             composable("pair") { PairScreen(onPaired = { nav.go("home") }, onCancel = { nav.back() }) }
             composable("search?q={q}", arguments = listOf(navArgument("q") { type = NavType.StringType; defaultValue = "" })) {
-                Box(Modifier.statusBarsPadding()) { SearchScreen(nav, it.arguments?.getString("q").orEmpty()) }
+                Box(Modifier.statusBarsPadding().navigationBarsPadding()) { SearchScreen(nav, it.arguments?.getString("q").orEmpty()) }
             }
-            composable("browse/{kind}") { Box(Modifier.statusBarsPadding()) { BrowseScreen(it.arguments?.getString("kind") ?: "movies", nav) } }
-            composable("group/{key}") { Box(Modifier.statusBarsPadding()) { GroupScreen(URLDecoder.decode(it.arguments?.getString("key") ?: "", "UTF-8"), nav) } }
+            composable("browse/{kind}") { Box(Modifier.statusBarsPadding().navigationBarsPadding()) { BrowseScreen(it.arguments?.getString("kind") ?: "movies", nav) } }
+            composable("group/{key}") { Box(Modifier.statusBarsPadding().navigationBarsPadding()) { GroupScreen(URLDecoder.decode(it.arguments?.getString("key") ?: "", "UTF-8"), nav) } }
             composable("watch/{id}?party={party}", arguments = listOf(navArgument("party") { type = NavType.StringType; nullable = true; defaultValue = null })) {
                 WatchScreen(it.arguments?.getString("id")!!.toInt(), nav, it.arguments?.getString("party"))
             }
-            composable("item/{id}") { Box(Modifier.statusBarsPadding()) { ItemScreen(it.arguments?.getString("id")!!.toInt(), nav) } }
-            composable("project/{id}") { Box(Modifier.statusBarsPadding()) { ProjectScreen(it.arguments?.getString("id")!!.toInt(), nav) } }
+            composable("item/{id}") { Box(Modifier.statusBarsPadding().navigationBarsPadding()) { ItemScreen(it.arguments?.getString("id")!!.toInt(), nav) } }
+            composable("project/{id}") { Box(Modifier.statusBarsPadding().navigationBarsPadding()) { ProjectScreen(it.arguments?.getString("id")!!.toInt(), nav) } }
         }
     }
     ItemActionsSheet(nav)

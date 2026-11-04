@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -17,6 +18,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -137,10 +140,15 @@ fun GroupScreen(key: String, nav: Nav) {
                             }
                         }
                     }
-                    items(items) { it ->
+                    val seasons = items.map { it.season }.distinct().size > 1
+                    itemsIndexed(items) { i, it ->
+                        if (kind == "show" && seasons && it.season != items.getOrNull(i - 1)?.season) {
+                            Text(if ((it.season ?: 0) == 0) "Specials" else "Season ${it.season}", style = MaterialTheme.typography.titleMedium, color = p.text,
+                                modifier = Modifier.padding(start = 16.dp, top = if (i == 0) 8.dp else 20.dp, bottom = 4.dp))
+                        }
                         Row(Modifier.fillMaxWidth().clickable { nav.open(it) }.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             if (kind == "show") Thumb(if (it.has_thumb) it.id else null, Modifier.width(140.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(8.dp)))
-                            else Text("${it.progress?.let { "" } ?: ""}", modifier = Modifier.width(0.dp))
+                            else Text("${i + 1}", color = p.text3, modifier = Modifier.width(24.dp), style = MaterialTheme.typography.bodySmall)
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(if (kind == "show" && it.episode != null) "${it.episode}. ${it.title}" else it.title, color = p.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -165,11 +173,13 @@ fun SearchScreen(nav: Nav, initial: String = "") {
     var q by remember { mutableStateOf(initial) }
     var submitted by remember { mutableStateOf(initial) }
     LaunchedEffect(q) { delay(350); if (q.length >= 2) submitted = q }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { if (initial.isEmpty()) focus.requestFocus() }      // you came here to type
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { nav.back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = p.text) }
             TextField(q, { q = it }, singleLine = true, placeholder = { Text("Search titles, footage, parts, what was said…") },
-                modifier = Modifier.weight(1f), shape = RoundedCornerShape(24.dp),
+                modifier = Modifier.weight(1f).focusRequester(focus), shape = RoundedCornerShape(24.dp),
                 colors = TextFieldDefaults.colors(focusedContainerColor = p.surface, unfocusedContainerColor = p.surface,
                     focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent, unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent))
         }

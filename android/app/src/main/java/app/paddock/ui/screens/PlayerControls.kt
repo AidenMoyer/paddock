@@ -163,17 +163,21 @@ fun PlayerControls(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SeekBar(value: Float, buffered: Float, onChange: (Float) -> Unit, onDone: () -> Unit) {
+internal fun SeekBar(value: Float, buffered: Float, onChange: (Float) -> Unit, onDone: () -> Unit,
+                     rest: Color = Color(0x44FFFFFF), loaded: Color = Color(0x88FFFFFF)) {
     val p = LocalPaddock.current
-    Box(Modifier.fillMaxWidth().height(28.dp), contentAlignment = Alignment.Center) {
-        Box(Modifier.fillMaxWidth().height(3.dp).background(Color(0x44FFFFFF))) {
-            Box(Modifier.fillMaxWidth(buffered.coerceIn(0f, 1f)).height(3.dp).background(Color(0x88FFFFFF)))
-        }
-        Slider(
-            value = value.coerceIn(0f, 1f), onValueChange = onChange, onValueChangeFinished = onDone,
-            colors = SliderDefaults.colors(thumbColor = p.accent, activeTrackColor = p.accent, inactiveTrackColor = Color.Transparent),
-            modifier = Modifier.fillMaxWidth().height(28.dp),
-        )
-    }
+    val played = value.coerceIn(0f, 1f)
+    Slider(
+        value = played, onValueChange = onChange, onValueChangeFinished = onDone,
+        modifier = Modifier.fillMaxWidth().height(28.dp),
+        thumb = { Box(Modifier.size(14.dp).background(p.accent, CircleShape)) },
+        track = {
+            Box(Modifier.fillMaxWidth().height(3.dp).clip(CircleShape).background(rest)) {
+                Box(Modifier.fillMaxWidth(buffered.coerceIn(0f, 1f)).height(3.dp).background(loaded))
+                Box(Modifier.fillMaxWidth(played).height(3.dp).background(p.accent))
+            }
+        },
+    )
 }

@@ -376,7 +376,7 @@ fun YouScreen(nav: Nav) {
                 ChipRow(listOf("system" to "System", "dark" to "Dark", "light" to "Light"), theme) { theme = it; s.theme = it; app.themeChanged() }
                 var cache by remember { mutableIntStateOf(s.cacheGb) }
                 Text("Offline video cache: $cache GB", color = p.text)
-                Slider(value = cache.toFloat(), onValueChange = { cache = it.toInt() }, onValueChangeFinished = { s.cacheGb = cache }, valueRange = 1f..32f, steps = 30)
+                Slider(value = cache.toFloat(), onValueChange = { cache = it.toInt() }, onValueChangeFinished = { s.cacheGb = cache }, valueRange = 1f..32f, steps = 30, colors = SliderDefaults.colors(activeTickColor = Color.Transparent, inactiveTickColor = Color.Transparent, inactiveTrackColor = p.surface3))
                 var autoplay by remember { mutableStateOf(s.autoplay) }
                 ToggleRow("Autoplay next video", autoplay) { autoplay = it; s.autoplay = it }
             }

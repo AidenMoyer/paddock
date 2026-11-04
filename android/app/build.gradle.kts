@@ -89,6 +89,7 @@ dependencies {
     implementation("androidx.media3:media3-datasource-okhttp:1.4.1")
     implementation("androidx.media3:media3-database:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
+    implementation("androidx.media3:media3-session:1.4.1")
 
     // app-only WireGuard tunnel (official userspace backend)
     implementation("com.wireguard.android:tunnel:1.0.20230706")

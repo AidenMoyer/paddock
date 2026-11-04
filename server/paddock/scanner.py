@@ -196,6 +196,7 @@ def upsert_item(lib: dict, root: Path, path: Path, kind: str, st: os.stat_result
         taken = info.get("created")
         if info.get("hdr"):
             auto_tags.add("HDR")
+        auto_tags.update(probe.split_list(info.get("genre")))
         if kind == "braw_clip":
             auto_tags.add("BRAW")
     elif kind == "audio":
@@ -209,8 +210,7 @@ def upsert_item(lib: dict, root: Path, path: Path, kind: str, st: os.stat_result
         meta.setdefault("album", album)
         group_key = f"album:{artist}:{album}".lower()
         sort_key = f"{info.get('disc') or 1:02d}-{info.get('track') or 0:03d}-{title.lower()}"
-        if info.get("genre"):
-            auto_tags.add(info["genre"])
+        auto_tags.update(probe.split_list(info.get("genre")))
     elif kind == "photo":
         info = probe.photo_info(path)
         meta.update(info)
@@ -259,6 +259,10 @@ def upsert_item(lib: dict, root: Path, path: Path, kind: str, st: os.stat_result
         title = ep.get("episode_title") or (f"Episode {e}" if e else title)
         group_key = f"show:{ep['show']}".lower()
         sort_key = f"S{s or 0:02d}E{e or 0:03d}"
+    if kind == "video" and lib["kind"] in ("movies", "shows"):
+        about = probe.nfo(path)
+        auto_tags.update(about.pop("genres", []))
+        meta.update(about)
     if taken is None:
         taken = st.st_mtime
     if kind in ("red_clip", "braw_clip"):
