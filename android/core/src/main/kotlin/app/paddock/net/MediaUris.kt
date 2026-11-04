@@ -11,4 +11,20 @@ object MediaUris {
      */
     fun acceptsRequireOriginal(authority: String?, path: String?): Boolean =
         authority == MEDIA_STORE && path?.trimStart('/')?.startsWith("picker") != true
+
+    /** A worker's input has to fit in 10 KB, and a long pick of files with long addresses doesn't. */
+    fun batches(uris: List<String>, budget: Int = 8000): List<List<String>> {
+        val out = mutableListOf<MutableList<String>>()
+        var used = 0
+        for (u in uris) {
+            val cost = u.length + 8     // the address plus what WorkManager adds around each string
+            if (out.isEmpty() || used + cost > budget) {
+                out.add(mutableListOf())
+                used = 0
+            }
+            out.last().add(u)
+            used += cost
+        }
+        return out
+    }
 }

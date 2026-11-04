@@ -34,6 +34,7 @@ import app.paddock.PaddockApp
 import app.paddock.backup.Backup
 import app.paddock.data.*
 import app.paddock.net.Mode
+import app.paddock.net.UploadStatus
 import app.paddock.ui.*
 import app.paddock.ui.theme.LocalPaddock
 import app.paddock.update.Updater
@@ -148,7 +149,8 @@ fun ProjectsScreen(nav: Nav) {
 fun ProjectScreen(id: Int, nav: Nav) {
     val api = PaddockApp.instance.api
     val p = LocalPaddock.current
-    val (load, retry) = rememberLoad(id) { api.get<ProjectDetail>("/api/projects/$id") }
+    val landed by UploadStatus.landed.collectAsState()      // files added from here show up without leaving the project
+    val (load, retry) = rememberLoad(id, landed) { api.get<ProjectDetail>("/api/projects/$id") }
     var tab by remember { mutableStateOf("media") }
     val ctx = LocalContext.current
     // add photos, videos, sound or any file from the phone straight into this project

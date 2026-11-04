@@ -36,7 +36,7 @@ import app.paddock.data.Item
 import app.paddock.ui.*
 import app.paddock.ui.theme.LocalPaddock
 import app.paddock.live.CommentsSection
-import app.paddock.backup.UploadStatus
+import app.paddock.net.UploadStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first

@@ -20,6 +20,7 @@ import app.paddock.data.HomeFeed
 import app.paddock.data.Item
 import app.paddock.data.PaddockJson
 import app.paddock.data.ProjectSummary
+import app.paddock.net.UploadStatus
 import app.paddock.ui.*
 import app.paddock.ui.theme.LocalPaddock
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -28,7 +29,8 @@ import kotlinx.serialization.json.decodeFromJsonElement
 fun HomeScreen(nav: Nav) {
     val api = PaddockApp.instance.api
     val conn by PaddockApp.instance.conn.state.collectAsState()
-    val (load, retry) = rememberLoad(conn.baseUrl) { api.get<HomeFeed>("/api/home") }
+    val landed by UploadStatus.landed.collectAsState()      // what you just uploaded belongs here
+    val (load, retry) = rememberLoad(conn.baseUrl, landed) { api.get<HomeFeed>("/api/home") }
     val mediaOnly = PaddockApp.instance.me.collectAsState().value?.media_only == true
     val kinds = PaddockApp.instance.libraries.collectAsState().value.map { it.kind }.toSet()
     LazyColumn(Modifier.fillMaxSize()) {

@@ -22,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.paddock.PaddockApp
+import app.paddock.net.UploadStatus
 import app.paddock.ui.theme.LocalPaddock
 import kotlinx.coroutines.delay
 
@@ -58,7 +59,7 @@ fun UploadBanner(onOpenDetails: () -> Unit) {
                     detail = if (reasons.size == 1) reasons[0] else "${reasons.last()} (and ${reasons.size - 1} more: tap to see)",
                     onTap = onOpenDetails,
                     action = "Try again", onAction = { UploadStatus.dismiss(); BackupReport.retry(ctx) },
-                    onClose = { UploadStatus.dismiss(); BackupReport.markSeen(ctx) })
+                    dismissBelow = { UploadStatus.dismiss(); BackupReport.markSeen(ctx) })
             }
             clean -> {
                 val server = PaddockApp.instance.servers.active?.name ?: "your server"
@@ -77,19 +78,26 @@ fun UploadBanner(onOpenDetails: () -> Unit) {
 
 @Composable
 private fun Card(icon: ImageVector, tint: Color, title: String, detail: String? = null, progress: Float? = null,
-                 onTap: (() -> Unit)? = null, action: String? = null, onAction: () -> Unit = {}, onClose: (() -> Unit)? = null) {
+                 onTap: (() -> Unit)? = null, action: String? = null, onAction: () -> Unit = {},
+                 onClose: (() -> Unit)? = null, dismissBelow: (() -> Unit)? = null) {
     val p = LocalPaddock.current
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).clip(RoundedCornerShape(14.dp)).background(p.surface)
         .then(if (onTap != null) Modifier.clickable(onClick = onTap) else Modifier)) {
-        Row(Modifier.padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        val below = dismissBelow != null    // a reason deserves the full width, so its buttons go underneath
+        Row(Modifier.fillMaxWidth().padding(start = 12.dp, top = if (below) 12.dp else 8.dp, bottom = if (below) 0.dp else 8.dp, end = if (below) 12.dp else 4.dp),
+            verticalAlignment = if (below) Alignment.Top else Alignment.CenterVertically) {
             Icon(icon, null, tint = tint)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(title, color = p.text, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 if (detail != null) Text(detail, color = p.text2, style = MaterialTheme.typography.bodySmall)
             }
-            if (action != null) TextButton(onClick = onAction) { Text(action, color = p.link) }
+            if (action != null && !below) TextButton(onClick = onAction) { Text(action, color = p.link) }
             if (onClose != null) IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "Dismiss", tint = p.text2) }
+        }
+        if (below) Row(Modifier.align(Alignment.End).padding(end = 4.dp)) {
+            TextButton(onClick = dismissBelow!!) { Text("Dismiss", color = p.text2) }
+            if (action != null) TextButton(onClick = onAction) { Text(action, color = p.link) }
         }
         if (progress != null) LinearProgressIndicator(progress = { progress }, Modifier.fillMaxWidth(), color = p.link, trackColor = Color.Transparent)
     }

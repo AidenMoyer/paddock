@@ -1,9 +1,10 @@
 """The ways a phone's photo could fail to arrive, or seem to: odd names, HEIC in all its spellings, old attempts, the trash."""
 
+import asyncio
 import hashlib
 import io
-import time
 
+import httpx
 import pytest
 from test_access import login
 
@@ -121,3 +122,101 @@ def test_someone_elses_private_copy_doesnt_stop_your_upload(app, admin):
             admin.put(f"/api/libraries/{lib['id']}/access", json={"visibility": "everyone", "communities": []})
         admin.delete(f"/api/communities/{community}")
         me.__exit__(None, None, None)
+
+
+def overlapping_puts(app, admin, uid, offset, chunks):
+    """Two senders hitting the same upload at the same moment, as two backup jobs on a phone did."""
+    async def run():
+        transport = httpx.ASGITransport(app=app, client=("192.168.1.50", 50000))
+        cookie = "; ".join(f"{x.name}={x.value}" for x in admin.cookies.jar)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver",
+                                     headers={**admin.headers, "cookie": cookie}) as c:
+            return await asyncio.gather(*(c.put(f"/api/uploads/{uid}", params={"offset": offset}, content=x) for x in chunks))
+    return asyncio.run(run())
+
+
+def test_two_senders_at_once_cant_corrupt_an_upload(app, admin):
+    data = b"\xff\xd8\xff" + b"sent-twice-at-once" * 5000
+    sha = hashlib.sha256(data).hexdigest()
+    uid = admin.post("/api/uploads", json={"filename": "IMG_14.jpg", "size": len(data), "sha256": sha}).json()["upload_id"]
+    replies = overlapping_puts(app, admin, uid, 0, [data, data])
+    assert sorted(r.status_code for r in replies)[0] == 200
+    # however they interleaved, what's on the server is exactly the file, and it finishes
+    assert admin.get(f"/api/uploads/{uid}").json()["offset"] == len(data)
+    done = admin.post(f"/api/uploads/{uid}/complete")
+    assert done.status_code == 200, done.text
+    assert done.json()["status"] == "done"
+
+
+def test_the_sender_that_lost_is_told_where_things_stand(app, admin):
+    data = b"\xff\xd8\xff" + b"lost-the-race" * 5000
+    sha = hashlib.sha256(data).hexdigest()
+    uid = admin.post("/api/uploads", json={"filename": "IMG_15.jpg", "size": len(data), "sha256": sha}).json()["upload_id"]
+    replies = overlapping_puts(app, admin, uid, 0, [data, data])
+    assert sorted(r.status_code for r in replies) == [200, 409]
+    assert int(next(r for r in replies if r.status_code == 409).headers["upload-offset"]) in (0, len(data))
+
+
+def test_a_sender_overtaken_halfway_through_a_chunk_leaves_no_trace(app, admin):
+    """A phone that walks out of Wi-Fi mid-chunk, comes back and starts over while the server still thinks it's connected."""
+    data = b"\xff\xd8\xff" + b"gone-and-back-again" * 5000
+    sha = hashlib.sha256(data).hexdigest()
+    uid = admin.post("/api/uploads", json={"filename": "IMG_18.jpg", "size": len(data), "sha256": sha}).json()["upload_id"]
+
+    async def run():
+        halfway, second_done = asyncio.Event(), asyncio.Event()
+
+        async def old_sender():
+            yield data[:len(data) // 2]
+            halfway.set()
+            await second_done.wait()
+            yield data[len(data) // 2:]
+
+        transport = httpx.ASGITransport(app=app, client=("192.168.1.50", 50000))
+        cookie = "; ".join(f"{x.name}={x.value}" for x in admin.cookies.jar)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver",
+                                     headers={**admin.headers, "cookie": cookie}) as c:
+            url = f"/api/uploads/{uid}"
+            first = asyncio.create_task(c.put(url, params={"offset": 0}, content=old_sender()))
+            await halfway.wait()
+            await asyncio.sleep(0.05)      # let the old sender write what it has
+            second = await c.put(url, params={"offset": 0}, content=data)
+            second_done.set()
+            return await first, second
+
+    first, second = asyncio.run(run())
+    assert second.status_code == 200, second.text
+    assert first.status_code == 409, first.text
+    done = admin.post(f"/api/uploads/{uid}/complete")
+    assert done.status_code == 200, done.text       # the checksum proves nothing of the old sender's survived
+
+
+def test_an_upload_already_corrupted_this_way_repairs_itself(app, admin):
+    from paddock import db
+    from paddock.config import settings
+
+    data = b"\xff\xd8\xff" + b"stuck-forever" * 500
+    sha = hashlib.sha256(data).hexdigest()
+    uid = admin.post("/api/uploads", json={"filename": "IMG_16.jpg", "size": len(data), "sha256": sha}).json()["upload_id"]
+    # what an older server left behind: every byte counted as received, but too many bytes in the file
+    (settings.uploads_tmp_dir / f"{uid}.part").write_bytes(data + data[:999])
+    db.x("UPDATE uploads SET received=? WHERE id=?", (len(data), uid))
+
+    stuck = admin.post(f"/api/uploads/{uid}/complete")
+    assert stuck.status_code == 409 and "incomplete" in stuck.json()["detail"]
+    # asking to start again no longer resumes the bad copy
+    again = admin.post("/api/uploads", json={"filename": "IMG_16.jpg", "size": len(data), "sha256": sha}).json()
+    assert again["status"] == "new" and again["upload_id"] != uid
+    assert not (settings.uploads_tmp_dir / f"{uid}.part").exists()
+    assert send(admin, data, "IMG_16.jpg")["status"] == "done"
+
+
+def test_an_upload_that_really_is_unfinished_can_still_resume(app, admin):
+    data = b"\xff\xd8\xff" + b"only-half-sent" * 500
+    sha = hashlib.sha256(data).hexdigest()
+    uid = admin.post("/api/uploads", json={"filename": "IMG_17.jpg", "size": len(data), "sha256": sha}).json()["upload_id"]
+    half = len(data) // 2
+    admin.put(f"/api/uploads/{uid}", params={"offset": 0}, content=data[:half])
+    assert admin.post(f"/api/uploads/{uid}/complete").status_code == 409
+    again = admin.post("/api/uploads", json={"filename": "IMG_17.jpg", "size": len(data), "sha256": sha}).json()
+    assert again["status"] == "resume" and again["upload_id"] == uid and again["offset"] == half

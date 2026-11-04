@@ -37,6 +37,10 @@ router = APIRouter(prefix="/api/uploads")
 MAX_CHUNK = 64 * 1024 * 1024
 MAX_FILE = 200 * 1024**3
 
+# Who is sending each upload right now. Only the newest request may write: an older one could be a second job on
+# the same phone, or a phone that left Wi-Fi mid-chunk and still looks connected from here.
+_senders: dict[str, object] = {}
+
 
 def _target_library(actor: Actor, library_id: int | None, project_id: int | None = None) -> dict:
     """Where an upload goes: a chosen library, the project's folder, or this person's backup library."""
@@ -158,9 +162,7 @@ def start(body: StartBody, actor: Actor = Depends(require_write)):
     if open_up and open_up["size"] == body.size:
         return {"status": "resume", "upload_id": open_up["id"], "offset": open_up["received"], "chunk_size": 8 * 1024 * 1024}
     if open_up:     # an earlier try measured it wrong: resuming could never finish, so start clean
-        (settings.uploads_tmp_dir / f"{open_up['id']}.part").unlink(missing_ok=True)
-        (settings.uploads_tmp_dir / f"{open_up['id']}.json").unlink(missing_ok=True)
-        db.x("UPDATE uploads SET status='failed', received=0, updated_at=? WHERE id=?", (time.time(), open_up["id"]))
+        _discard(open_up["id"])
     try:
         free = shutil.disk_usage(lib["path"]).free
     except OSError:
@@ -175,6 +177,13 @@ def start(body: StartBody, actor: Actor = Depends(require_write)):
     meta = {"library_id": lib["id"], "subfolder": body.subfolder, "project_id": body.project_id}
     (settings.uploads_tmp_dir / f"{uid}.json").write_text(json.dumps(meta))
     return {"status": "new", "upload_id": uid, "offset": 0, "chunk_size": 8 * 1024 * 1024}
+
+
+def _discard(uid: str) -> None:
+    """Give up on a stored attempt, so the next try starts clean instead of resuming something that can't finish."""
+    (settings.uploads_tmp_dir / f"{uid}.part").unlink(missing_ok=True)
+    (settings.uploads_tmp_dir / f"{uid}.json").unlink(missing_ok=True)
+    db.x("UPDATE uploads SET status='failed', received=0, updated_at=? WHERE id=?", (time.time(), uid))
 
 
 def _upload(uid: str, actor: Actor) -> dict:
@@ -192,26 +201,41 @@ def status(uid: str, actor: Actor = Depends(require_write)):
 
 @router.put("/{uid}")
 async def put_chunk(uid: str, offset: int, request: Request, actor: Actor = Depends(require_write)):
-    up = await run_in_threadpool(_upload, uid, actor)
+    # No awaiting until this request is registered as the sender, so two can't both believe they're next.
+    up = _upload(uid, actor)
     if up["status"] != "open":
         raise HTTPException(409, "Upload is already finished")
     if offset != up["received"]:
         raise HTTPException(409, f"Expected offset {up['received']}", headers={"Upload-Offset": str(up["received"])})
     tmp = settings.uploads_tmp_dir / f"{uid}.part"
     written = 0
+    me = object()
+    _senders[uid] = me
+
+    def still_mine() -> None:
+        if _senders.get(uid) is not me:
+            now = _upload(uid, actor)["received"]
+            raise HTTPException(409, f"Expected offset {now}", headers={"Upload-Offset": str(now)})
+
     try:
         with tmp.open("ab") as f:
             if f.tell() != offset:  # crash between write and DB update: trust the DB, truncate the file
                 f.truncate(offset)
                 f.seek(offset)
             async for chunk in request.stream():
+                still_mine()
                 written += len(chunk)
                 if written > MAX_CHUNK or offset + written > up["size"]:
                     f.truncate(offset)
                     raise HTTPException(413, "Chunk too large")
                 f.write(chunk)
+                f.flush()   # nothing left buffered to land on top of a newer sender's data
+        still_mine()
     except OSError as e:
         raise _disk_error(e, "the server's upload area")
+    finally:
+        if _senders.get(uid) is me:
+            del _senders[uid]
     new_offset = offset + written
     db.x("UPDATE uploads SET received=?, updated_at=? WHERE id=?", (new_offset, time.time(), uid))
     return {"offset": new_offset}
@@ -223,6 +247,8 @@ def _finish(uid: str, actor: Actor) -> dict:
         return {"status": "done", "item_id": up["item_id"]}
     tmp = settings.uploads_tmp_dir / f"{uid}.part"
     if not tmp.exists() or tmp.stat().st_size != up["size"]:
+        if up["received"] >= up["size"]:    # every byte counted, yet the file is wrong: it could never finish
+            _discard(uid)
         raise HTTPException(409, "Upload is incomplete")
     h = hashlib.sha256()
     with tmp.open("rb") as f:
