@@ -5,7 +5,8 @@
 #
 #   live:  boot "Try Paddock OS" and wait until Paddock answers over HTTPS
 #   full:  + unattended install to a virtual disk, boot it with BIOS and with UEFI, create the first admin,
-#          and build a RAID 1 pool from two blank virtual drives through Manage server → System's API
+#          build a RAID 1 pool from two blank virtual drives through Manage server → System's API,
+#          then upgrade in place and check that accounts, data, drives and the machine's identity all stay
 set -Eeuo pipefail
 trap 'echo "smoke.sh: failed at line $LINENO: $BASH_COMMAND (exit $?)" >&2' ERR
 
@@ -124,6 +125,34 @@ for _ in $(seq 1 20); do
 done
 api https://127.0.0.1:18445/api/admin/system/disks | grep -q '"mountpoint":"/srv/media/ci"' || die "the pool did not come back after a reboot"
 echo "Paddock answers after a UEFI boot and the pool is mounted again"
+api -d '{"name":"Survives the upgrade"}' https://127.0.0.1:18445/api/projects >/dev/null || die "creating a project failed"
+stop_vm "$pid"
+
+step "upgrade in place"
+timeout 1200 "${QEMU[@]}" -kernel "$W/vmlinuz" -initrd "$W/initrd.img" \
+  -append "boot=live paddock.installer paddock.autoinstall=/dev/vda paddock.automode=upgrade console=ttyS0,115200" \
+  -cdrom "$ISO" -drive "file=$W/system.qcow2,if=virtio" -nic none >"$W/upgrade.log" 2>&1 </dev/null || true
+grep -q PADDOCK-INSTALL-OK "$W/upgrade.log" || die "the upgrade did not finish"
+id_before="$(sed -n 's/.*machine-id before upgrade: \([0-9a-f]*\).*/\1/p' "$W/upgrade.log" | head -n1)"
+id_after="$(sed -n 's/.*machine-id after upgrade: \([0-9a-f]*\).*/\1/p' "$W/upgrade.log" | head -n1)"
+[ -n "$id_before" ] && [ "$id_before" = "$id_after" ] || die "the machine's identity changed: '$id_before' to '$id_after'"
+echo "upgraded, and the machine kept its identity"
+
+step "upgraded system: accounts, data and drives are all still there"
+pid=$(boot_installed upgraded 18446)
+wait_health 18446 300 || die "the upgraded system did not come up"
+rm -f "$W/jar"
+api -d "{\"username\":\"ci\",\"password\":\"$PW\"}" https://127.0.0.1:18446/api/auth/login >/dev/null || die "the admin account did not survive the upgrade"
+api https://127.0.0.1:18446/api/projects | grep -q 'Survives the upgrade' || die "data was lost in the upgrade"
+sysinfo="$(api https://127.0.0.1:18446/api/admin/system)" || die "System API failed after the upgrade"
+grep -q '"managed":true' <<<"$sysinfo" || die "the system agent is not reachable after the upgrade"
+grep -q '"paddock-console":"active"' <<<"$sysinfo" || die "the on-screen console isn't running after the upgrade: $sysinfo"
+for _ in $(seq 1 20); do
+  api https://127.0.0.1:18446/api/admin/system/disks | grep -q '"mountpoint":"/srv/media/ci"' && break
+  sleep 3
+done
+api https://127.0.0.1:18446/api/admin/system/disks | grep -q '"mountpoint":"/srv/media/ci"' || die "the pool did not come back after the upgrade"
+echo "the upgrade kept the admin, the data, the agent and the pool"
 stop_vm "$pid"
 
 echo; echo "all Paddock OS tests passed"

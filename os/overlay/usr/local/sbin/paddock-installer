@@ -6,7 +6,8 @@
 # installer on a disk that already has Paddock OS offers an upgrade that keeps the data partition.
 #
 # Unattended (used by CI in a VM only; must be typed on the kernel command line):
-#   paddock.autoinstall=/dev/vda
+#   paddock.autoinstall=/dev/vda                              erase the disk and install
+#   paddock.autoinstall=/dev/vda paddock.automode=upgrade     upgrade what's on it
 set -uo pipefail
 
 TITLE="Paddock OS installer"
@@ -17,6 +18,8 @@ LOG=/run/paddock-install.log
 MIN_BYTES=$((16 * 1024 * 1024 * 1024))
 . /etc/paddock-os-release
 AUTO="$(sed -n 's/.*paddock\.autoinstall=\([^ ]*\).*/\1/p' /proc/cmdline)"
+# How this machine was set up, which has to survive an upgrade: the identity its network knows it by, a fixed address, its drive pools
+KEPT="etc/machine-id etc/systemd/network/20-wired.network etc/mdadm/mdadm.conf"
 
 say() {
   echo "[installer] $*" >>"$LOG"
@@ -88,7 +91,9 @@ find_part() { lsblk -lnpo NAME,PARTLABEL "$1" | awk -v l="$2" '$2==l {print $1; 
 say "Paddock OS $PADDOCK_OS_VERSION ($PADDOCK_OS_VARIANT) installer started"
 
 if [ -n "$AUTO" ]; then
-  DISK="$AUTO"; MODE=erase; ROOTPW=""; HOST=paddock
+  DISK="$AUTO"; ROOTPW=""; HOST=paddock
+  MODE="$(sed -n 's/.*paddock\.automode=\([a-z]*\).*/\1/p' /proc/cmdline)"
+  MODE="${MODE:-erase}"
   [ -b "$DISK" ] || fail "autoinstall disk $DISK not found"
 else
   whiptail --title "$TITLE" --yes-button "Continue" --no-button "Cancel" --yesno \
@@ -151,10 +156,10 @@ else
   ESP=$(find_part "$DISK" PADDOCK-ESP); ROOT=$(find_part "$DISK" PADDOCK-ROOT); DATA=$(find_part "$DISK" PADDOCK-DATA)
   [ -n "$ESP" ] && [ -n "$ROOT" ] && [ -n "$DATA" ] || fail "Couldn't find the existing Paddock OS partitions on $DISK."
   for p in "$ESP" "$ROOT" "$DATA"; do umount -l "$p" 2>/dev/null; done
-  # how this machine was set up survives the upgrade: a fixed address, and the identity its network knows it by
   KEEP=$(mktemp -d)
   if mount -o ro "$ROOT" "$TARGET" 2>>"$LOG"; then
-    for f in etc/machine-id etc/systemd/network/20-wired.network; do
+    say "machine-id before upgrade: $(cat "$TARGET/etc/machine-id" 2>/dev/null)"
+    for f in $KEPT; do
       if [ -s "$TARGET/$f" ]; then mkdir -p "$KEEP/$(dirname "$f")"; cp -p "$TARGET/$f" "$KEEP/$f"; fi
     done
     umount "$TARGET"
@@ -193,7 +198,13 @@ echo "$HOST" >"$TARGET/etc/hostname"
 printf '127.0.0.1\tlocalhost\n127.0.1.1\t%s\n::1\t\tlocalhost ip6-localhost ip6-loopback\n' "$HOST" >"$TARGET/etc/hosts"
 sed -i "s/^PADDOCK_HOSTNAMES=.*/PADDOCK_HOSTNAMES=$HOST.local/" "$TARGET/etc/paddock/paddock.env"
 : >"$TARGET/etc/machine-id"
-if [ -n "${KEEP:-}" ]; then cp -a "$KEEP/." "$TARGET/"; fi
+if [ -n "${KEEP:-}" ]; then
+  # file by file: copying the folder as a whole would put its private permissions on the new system's /, and lock out everything but root
+  for f in $KEPT; do
+    if [ -s "$KEEP/$f" ]; then mkdir -p "$TARGET/$(dirname "$f")"; cp -p "$KEEP/$f" "$TARGET/$f"; fi
+  done
+  say "machine-id after upgrade: $(cat "$TARGET/etc/machine-id" 2>/dev/null)"
+fi
 
 for m in dev dev/pts proc sys run; do
   case $m in proc) run mount -t proc proc "$TARGET/proc" ;; sys) run mount -t sysfs sys "$TARGET/sys" ;;
