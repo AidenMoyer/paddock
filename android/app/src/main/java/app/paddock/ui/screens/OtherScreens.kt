@@ -39,6 +39,7 @@ import app.paddock.backup.Backup
 import app.paddock.data.*
 import app.paddock.net.Mode
 import app.paddock.net.UploadStatus
+import app.paddock.player.Music
 import app.paddock.ui.*
 import app.paddock.ui.theme.LocalPaddock
 import app.paddock.update.Updater
@@ -422,7 +423,7 @@ fun YouScreen(nav: Nav) {
                 Text("Offline video cache: $cache GB", color = p.text)
                 Slider(value = cache.toFloat(), onValueChange = { cache = it.toInt() }, onValueChangeFinished = { s.cacheGb = cache }, valueRange = 1f..32f, steps = 30, colors = SliderDefaults.colors(activeTickColor = Color.Transparent, inactiveTickColor = Color.Transparent, inactiveTrackColor = p.surface3))
                 var autoplay by remember { mutableStateOf(s.autoplay) }
-                ToggleRow("Autoplay next video or song", autoplay) { autoplay = it; s.autoplay = it }
+                ToggleRow("Autoplay next video or song", autoplay) { autoplay = it; s.autoplay = it; Music.prepareFollowing() }
             }
         }
         item {

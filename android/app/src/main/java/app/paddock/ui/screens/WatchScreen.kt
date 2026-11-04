@@ -332,7 +332,7 @@ fun WatchScreen(id: Int, nav: Nav, partyId: String? = null) {
                     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("Up next", style = MaterialTheme.typography.titleMedium, color = p.text, modifier = Modifier.weight(1f))
                         Text("Autoplay", color = p.text2, style = MaterialTheme.typography.bodySmall)
-                        Switch(checked = autoplay, onCheckedChange = { autoplay = it; app.settings.autoplay = it }, modifier = Modifier.scale(0.8f))
+                        Switch(checked = autoplay, onCheckedChange = { autoplay = it; app.settings.autoplay = it; Music.prepareFollowing() }, modifier = Modifier.scale(0.8f))
                     }
                 }
                 items(upNext, key = { it.id }) { r ->
