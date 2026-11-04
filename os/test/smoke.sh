@@ -94,6 +94,8 @@ step "first admin + System API + RAID 1 pool"
 api() { curl -fsk -b "$W/jar" -c "$W/jar" -H 'content-type: application/json' -H 'x-paddock: 1' "$@"; }
 PW="ci-$(head -c 18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')"
 api -d "{\"username\":\"ci\",\"password\":\"$PW\",\"server_name\":\"CI\"}" https://127.0.0.1:18444/api/auth/setup >/dev/null || die "setup failed"
+# early on purpose: stopping a VM cuts its power, which can lose the last few seconds of writes
+api -d '{"name":"Survives the upgrade"}' https://127.0.0.1:18444/api/projects >/dev/null || die "creating a project failed"
 sysinfo="$(api https://127.0.0.1:18444/api/admin/system)" || die "System API failed"
 grep -q '"managed":true' <<<"$sysinfo" || die "the system agent is not reachable"
 grep -q '"paddock-console":"active"' <<<"$sysinfo" || die "the on-screen Paddock OS console isn't running: $sysinfo"
@@ -125,7 +127,6 @@ for _ in $(seq 1 20); do
 done
 api https://127.0.0.1:18445/api/admin/system/disks | grep -q '"mountpoint":"/srv/media/ci"' || die "the pool did not come back after a reboot"
 echo "Paddock answers after a UEFI boot and the pool is mounted again"
-api -d '{"name":"Survives the upgrade"}' https://127.0.0.1:18445/api/projects >/dev/null || die "creating a project failed"
 stop_vm "$pid"
 
 step "upgrade in place"
