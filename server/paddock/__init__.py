@@ -1,3 +1,3 @@
 """Paddock — a self-hosted media, footage and engineering vault."""
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
